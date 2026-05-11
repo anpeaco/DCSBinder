@@ -106,8 +106,10 @@ Both `added` and `removed` are optional and may co-exist. A "key" is a string li
 The bespoke serializer must replicate this byte-for-byte:
 
 - **Tabs** for indentation (1 tab per level).
-- String keys quoted as `["string"]`.
+- **LF** line endings (`\n`), even on Windows. Never `\r\n`.
+- String keys quoted as `["string"]`. Strings use `"` (double quote), not `'`.
 - Numeric array keys as `[1]`, `[2]`, …, **one-indexed**, sequential.
+- Spaces around `=` (`] = `, not `]=`).
 - **Trailing comma** on every entry inside braces.
 - Outer wrapper exactly:
   ```
@@ -116,9 +118,14 @@ The bespoke serializer must replicate this byte-for-byte:
   }
   return diff
   ```
-  with a single trailing newline at EOF.
-- **Top-level key order**: collect from fixtures. Observed: `axisDiffs` before `keyDiffs`.
-- Within a command list, **preserve the original key order** (use `IndexMap`).
+  **No trailing newline at EOF** — the file ends with the `f` of `diff`.
+- **Top-level key order**: alphabetical. Observed in fixtures: `axisDiffs` before `keyDiffs`.
+- **Within each command**, keys appear in alphabetical order (`added` < `name` < `removed`).
+- **Command IDs** within `axisDiffs` / `keyDiffs` appear in lexical order.
+
+The parser preserves the actual order found in each file via `IndexMap`; the
+serializer emits whatever order was parsed. This means we follow DCS automatically
+if DCS ever changes its sort order.
 
 The byte-equal round-trip test in `tests/roundtrip.rs` is the enforcement.
 

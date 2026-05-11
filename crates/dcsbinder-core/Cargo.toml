@@ -14,12 +14,16 @@ workspace = true
 [dependencies]
 thiserror = "2"
 
-# Module-specific deps will be added as features land:
-# - parser:   full_moon, indexmap
-# - scanner:  walkdir, regex
-# - device:   sdl2 (bundled), once_cell
+# M1 deps
+full_moon = "1"
+indexmap = "2"
+regex = "1"
+walkdir = "2"
+
+# Later milestones will add:
+# - device:   sdl2 (bundled)
 # - conflict: similar
-# - remap:    tempfile, blake3, fs_extra
+# - remap:    tempfile, blake3
 # - history:  serde, serde_json, uuid, time
 # - config:   directories, sysinfo
 
