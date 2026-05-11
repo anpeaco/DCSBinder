@@ -55,6 +55,8 @@ struct AppData {
     items: Vec<Item>,
     /// Current filter text (case-folded). Empty = no filter.
     filter: String,
+    /// Category filter: 0 = all, 1 = conflicts only, 2 = orphans only.
+    category: i32,
 }
 
 #[derive(Clone)]
@@ -174,13 +176,12 @@ fn wire_callbacks(
             // holding the lock.
             let filtered = filtered_items(&st);
             let selected_item: Option<Item> = filtered.get(idx as usize).map(|i| (*i).clone());
-            let (context, affected) = if let Some(item) = selected_item.as_ref() {
-                (
-                    build_aircraft_context(&st, item),
-                    count_affected_aircraft(&st, item),
-                )
+            let (context, affected_list, affected) = if let Some(item) = selected_item.as_ref() {
+                let list = build_affected_aircraft_list(&st, item);
+                let count = list.len() as i32;
+                (build_aircraft_context(&st, item), list, count)
             } else {
-                (Vec::new(), 0)
+                (Vec::new(), Vec::new(), 0)
             };
             drop(st);
 
@@ -199,6 +200,8 @@ fn wire_callbacks(
 
             let cm: Rc<VecModel<AircraftDevice>> = Rc::new(VecModel::from(context));
             app_state.set_aircraft_devices(ModelRc::from(cm));
+            let am: Rc<VecModel<AffectedAircraft>> = Rc::new(VecModel::from(affected_list));
+            app_state.set_affected_aircraft(ModelRc::from(am));
             app_state.set_affected_aircraft_count(affected);
             let m: Rc<VecModel<DiffSegment>> = Rc::new(VecModel::from(segments));
             app_state.set_diff_segments(ModelRc::from(m));
@@ -317,6 +320,57 @@ fn wire_callbacks(
         });
     }
 
+    // category-changed
+    {
+        let weak = app.as_weak();
+        let state = state.clone();
+        app_state.on_category_changed(move |cat: i32| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut st = state.lock().unwrap();
+            st.category = cat;
+            let data = st.clone();
+            drop(st);
+            populate_conflicts_only(&app, &data);
+        });
+    }
+
+    // request-bulk-plan
+    {
+        let weak = app.as_weak();
+        let state = state.clone();
+        let pending = pending.clone();
+        app_state.on_request_bulk_plan(move || {
+            let Some(app) = weak.upgrade() else { return };
+            let app_state = app.global::<AppState>();
+            let st = state.lock().unwrap();
+            let scope = app_state.get_apply_scope();
+            let filtered: Vec<Item> = filtered_items(&st).into_iter().cloned().collect();
+            let files = st.scanned_files.clone();
+            drop(st);
+            match build_bulk_plan(&filtered, &files, scope) {
+                Ok(Some(manifest)) => {
+                    let summary = plan_summary_for_ui(&manifest);
+                    *pending.lock().unwrap() = Some(PendingApply { manifest });
+                    app_state.set_plan_summary(summary);
+                    app_state.set_last_result(SharedString::new());
+                    app_state.set_plan_visible(true);
+                }
+                Ok(None) => {
+                    app_state.set_last_result(SharedString::from(
+                        "Nothing to apply — no items in the current filter have a clear live target.",
+                    ));
+                    app_state.set_plan_visible(true);
+                }
+                Err(e) => {
+                    app_state.set_last_result(SharedString::from(format!(
+                        "bulk plan failed: {e:#}"
+                    )));
+                    app_state.set_plan_visible(true);
+                }
+            }
+        });
+    }
+
     // undo-last
     {
         let weak = app.as_weak();
@@ -358,7 +412,11 @@ fn trigger_rescan(app: &App, state: Arc<Mutex<AppData>>) {
         let mut new_state = perform_scan();
         // Preserve the existing filter so a rescan after applying a remap
         // doesn't surprise the user by clearing their search.
-        new_state.filter.clone_from(&state.lock().unwrap().filter);
+        {
+            let st = state.lock().unwrap();
+            new_state.filter.clone_from(&st.filter);
+            new_state.category = st.category;
+        }
         let weak2 = weak.clone();
         let state2 = state.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -394,6 +452,7 @@ fn perform_scan() -> AppData {
         live_devices,
         items,
         filter: String::new(),
+        category: 0,
     }
 }
 
@@ -441,14 +500,17 @@ fn build_items(conflicts: &[Conflict], orphans: &[Orphan], live: &[(String, Guid
 }
 
 fn filtered_items(data: &AppData) -> Vec<&Item> {
-    if data.filter.is_empty() {
-        return data.items.iter().collect();
-    }
     let needle = &data.filter;
     data.items
         .iter()
+        .filter(|i| match data.category {
+            1 => i.orphan_target_guid.is_none(), // conflicts only
+            2 => i.orphan_target_guid.is_some(), // orphans only
+            _ => true,
+        })
         .filter(|i| {
-            i.aircraft.to_lowercase().contains(needle)
+            needle.is_empty()
+                || i.aircraft.to_lowercase().contains(needle)
                 || i.device_name.to_lowercase().contains(needle)
                 || i.subtype.as_str().contains(needle)
         })
@@ -658,11 +720,12 @@ fn build_aircraft_context(data: &AppData, item: &Item) -> Vec<AircraftDevice> {
     by_name.into_values().collect()
 }
 
-/// How many aircraft folders the planner would touch for this item if
-/// "all aircraft" scope is selected.
-fn count_affected_aircraft(data: &AppData, item: &Item) -> i32 {
-    use std::collections::HashSet;
-    let aircrafts: HashSet<&str> = data
+/// The aircraft folders the planner would touch for this item under
+/// "all aircraft" scope, sorted alphabetically. The currently-selected
+/// aircraft is marked so the UI can highlight it.
+fn build_affected_aircraft_list(data: &AppData, item: &Item) -> Vec<AffectedAircraft> {
+    use std::collections::BTreeSet;
+    let names: BTreeSet<&str> = data
         .scanned_files
         .iter()
         .filter(|f| {
@@ -676,7 +739,13 @@ fn count_affected_aircraft(data: &AppData, item: &Item) -> i32 {
         })
         .map(|f| f.aircraft.as_str())
         .collect();
-    aircrafts.len() as i32
+    names
+        .into_iter()
+        .map(|name| AffectedAircraft {
+            name: SharedString::from(name),
+            is_selected: name == item.aircraft,
+        })
+        .collect()
 }
 
 fn compute_diffs(item: &Item) -> (Vec<DiffSegment>, Vec<SbsRow>) {
@@ -823,6 +892,177 @@ fn flush_pending_sbs(
     }
     dels.clear();
     ins.clear();
+}
+
+/// Build a single combined manifest covering every item in `items` for which
+/// a "live" target can be auto-determined. Each item contributes its own
+/// backups + mutations to one big plan.
+///
+/// Auto-resolution rules per item:
+///   - Orphan: source = the stale GUID, target = the live GUID.
+///   - Conflict with one live + one stale: source = stale, target = live.
+///   - Conflict with no live candidate: skipped (user must resolve manually).
+///   - Conflict with multiple live: skipped (ambiguous).
+fn build_bulk_plan(items: &[Item], files: &[ScannedFile], scope: i32) -> Result<Option<Manifest>> {
+    use dcsbinder_core::remap::{BackupEntry, Manifest, Mutation, OperationKind, MANIFEST_VERSION};
+    use std::collections::BTreeSet;
+    use uuid::Uuid;
+
+    let backup_root = config::app_data_dir()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve %APPDATA%/DCSBinder"))?
+        .join("backups");
+    std::fs::create_dir_all(&backup_root)?;
+
+    let op_id = Uuid::now_v7().to_string();
+    let timestamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let safe_ts = timestamp.replace([':', '.'], "-");
+    let short: String = op_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect();
+    let bulk_backup_dir = backup_root.join(format!("{safe_ts}_bulk_{short}"));
+
+    let mut backups: Vec<BackupEntry> = Vec::new();
+    let mut mutations: Vec<Mutation> = Vec::new();
+    let mut seen_backup_src: BTreeSet<std::path::PathBuf> = BTreeSet::new();
+    let mut device_summary: Vec<String> = Vec::new();
+    let mut install_root_for_manifest: Option<std::path::PathBuf> = None;
+    let mut subtype_for_manifest: Option<String> = None;
+
+    for item in items {
+        let (source_str, target_str) = if let Some(target) = &item.orphan_target_guid {
+            (Some(item.candidates[0].guid.clone()), Some(target.clone()))
+        } else if item.candidates.len() == 2 {
+            // Pick the live candidate as target, stale as source.
+            let live_guid = item.live_guid.as_deref();
+            let a = &item.candidates[0];
+            let b = &item.candidates[1];
+            let parse = |g: &str| Guid::parse_dcs(&format!("{{{g}}}"));
+            match (parse(&a.guid), parse(&b.guid), live_guid) {
+                (Ok(pa), Ok(pb), Some(live)) => {
+                    let a_live = pa.to_dcs_string() == live;
+                    let b_live = pb.to_dcs_string() == live;
+                    if a_live && !b_live {
+                        (Some(b.guid.clone()), Some(a.guid.clone()))
+                    } else if b_live && !a_live {
+                        (Some(a.guid.clone()), Some(b.guid.clone()))
+                    } else {
+                        (None, None) // skip — ambiguous or both stale
+                    }
+                }
+                _ => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
+        let (Some(source_str), Some(target_str)) = (source_str, target_str) else {
+            continue;
+        };
+        let restrict_aircraft = (scope == 1).then(|| item.aircraft.clone());
+        let Ok(m) = build_plan(
+            item,
+            files,
+            &source_str,
+            &target_str,
+            restrict_aircraft.as_deref(),
+        ) else {
+            continue;
+        };
+
+        install_root_for_manifest = Some(m.install_root.clone());
+        subtype_for_manifest = Some(m.subtype.clone());
+        for b in m.backups {
+            if seen_backup_src.insert(b.src.clone()) {
+                // rewrite backup path under the bulk backup dir.
+                let rewrote = rewrite_backup_path(&b.backup, &m.backup_dir, &bulk_backup_dir);
+                backups.push(BackupEntry {
+                    src: b.src,
+                    backup: rewrote,
+                    blake3: b.blake3,
+                    size: b.size,
+                });
+            }
+        }
+        for mu in m.mutations {
+            mutations.push(rewrite_mutation(&mu, &m.backup_dir, &bulk_backup_dir));
+        }
+        device_summary.push(format!(
+            "{} ({}{})",
+            item.device_name,
+            item.aircraft,
+            if scope == 1 { "" } else { ", …" }
+        ));
+    }
+
+    if mutations.is_empty() {
+        return Ok(None);
+    }
+
+    let install_root = install_root_for_manifest.unwrap_or_else(|| backup_root.clone());
+    let subtype = subtype_for_manifest.unwrap_or_else(|| "joystick".to_string());
+    let manifest = Manifest {
+        version: MANIFEST_VERSION,
+        operation_id: op_id,
+        operation: OperationKind::Remap,
+        timestamp,
+        backup_dir: bulk_backup_dir,
+        install_root,
+        device_name: format!("BULK: {} item(s)", device_summary.len()),
+        subtype,
+        source_guid: "<bulk>".to_string(),
+        target_guid: "<bulk>".to_string(),
+        backups,
+        mutations,
+    };
+    Ok(Some(manifest))
+}
+
+fn rewrite_backup_path(
+    original: &std::path::Path,
+    from_root: &std::path::Path,
+    to_root: &std::path::Path,
+) -> std::path::PathBuf {
+    original
+        .strip_prefix(from_root)
+        .map_or_else(|_| original.to_path_buf(), |rel| to_root.join(rel))
+}
+
+fn rewrite_mutation(
+    m: &dcsbinder_core::remap::Mutation,
+    from_root: &std::path::Path,
+    to_root: &std::path::Path,
+) -> dcsbinder_core::remap::Mutation {
+    use dcsbinder_core::remap::Mutation as M;
+    match m {
+        M::WriteFile {
+            dst,
+            source,
+            source_blake3,
+        } => M::WriteFile {
+            dst: dst.clone(),
+            source: source.clone(),
+            source_blake3: source_blake3.clone(),
+        },
+        M::MoveFile { src, dst } => M::MoveFile {
+            src: src.clone(),
+            dst: rewrite_backup_path(dst, from_root, to_root),
+        },
+        M::StringReplace {
+            path,
+            find,
+            replace,
+            expected_replacements,
+        } => M::StringReplace {
+            path: path.clone(),
+            find: find.clone(),
+            replace: replace.clone(),
+            expected_replacements: *expected_replacements,
+        },
+    }
 }
 
 fn build_plan(

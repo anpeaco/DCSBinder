@@ -60,6 +60,11 @@ struct AircraftDevice {
     has-conflict: bool,
 }
 
+struct AffectedAircraft {
+    name: string,
+    is-selected: bool,
+}
+
 struct PlanSummary {
     device-name: string,
     from-guid: string,
@@ -173,6 +178,8 @@ export global AppState {
         18px * (show-context ? sbs-rows.length : sbs-changed-count);
 
     in-out property <string> filter-text;
+    // Category filter: 0 = all, 1 = conflicts only, 2 = orphans only.
+    in-out property <int> filter-category: 0;
     in-out property <bool> show-context: true;
 
     // Apply-scope: 0 = remap across all aircraft, 1 = remap selected aircraft only.
@@ -181,125 +188,145 @@ export global AppState {
     in property <int> affected-aircraft-count: 0;
     // Other Active devices in the same aircraft+subtype as the selection.
     in property <[AircraftDevice]> aircraft-devices;
+    // Aircraft folders that have the selected device configured.
+    in property <[AffectedAircraft]> affected-aircraft;
 
     callback rescan();
     callback select-conflict(int);
     // (from-guid, to-guid, scope) — scope: 0 = all aircraft, 1 = single aircraft.
     callback request-plan(string, string, int);
+    // Build a plan that processes every currently-filtered item. Each item
+    // picks a sensible default mapping (orphan -> live, conflict -> live one
+    // wins). User reviews the plan before confirming.
+    callback request-bulk-plan();
     callback confirm-apply();
     callback cancel-apply();
     callback undo-last();
     callback filter-changed(string);
+    callback category-changed(int);
 }
 
-// ---------------------------------------------------------- StatusBar ----
+// ---------------------------------------------------------- AppHeader ----
+//
+// Single compact header combining product name, scan summary, install path,
+// DCS-running warning, and the top-level action buttons.
 
-component StatusBar inherits Rectangle {
-    background: GhTheme.t.surface;
+component AppHeader inherits Rectangle {
     height: 56px;
+    background: GhTheme.t.surface;
     Rectangle {
-        // Bottom border.
         x: 0; y: parent.height - 1px;
         width: parent.width; height: 1px;
         background: GhTheme.t.border;
     }
     HorizontalBox {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 8px;
         spacing: 12px;
+        // Title block.
         VerticalBox {
             padding: 0;
             spacing: 2px;
-            Text {
-                text: "DCSBinder";
-                font-size: 16px;
-                font-weight: 700;
-                color: GhTheme.t.text;
+            width: 220px;
+            HorizontalBox {
+                padding: 0;
+                spacing: 6px;
+                Text {
+                    text: "DCSBinder";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: GhTheme.t.text;
+                    vertical-alignment: center;
+                }
             }
             Text {
                 text: AppState.status-text;
-                font-size: 11px;
+                font-size: 10px;
                 color: GhTheme.t.text-muted;
+                overflow: elide;
             }
         }
-        Rectangle { horizontal-stretch: 1; }
+        // Install info (only first install shown inline; rare to have multiple).
+        if AppState.installs.length > 0: VerticalBox {
+            padding: 0;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            HorizontalBox {
+                padding: 0;
+                spacing: 6px;
+                Text {
+                    text: AppState.installs[0].label;
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: GhTheme.t.text;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "·";
+                    color: GhTheme.t.text-muted;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "\{AppState.installs[0].aircraft-count} aircraft · \{AppState.installs[0].device-count} files";
+                    font-size: 11px;
+                    color: GhTheme.t.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                text: AppState.installs[0].input-root;
+                font-size: 10px;
+                font-family: "Consolas";
+                color: GhTheme.t.text-muted;
+                overflow: elide;
+            }
+        }
+        if AppState.installs.length == 0: Rectangle { horizontal-stretch: 1; }
+        // DCS-running warning.
         if AppState.dcs-running: Rectangle {
             background: GhTheme.t.danger-soft;
             border-color: GhTheme.t.danger;
             border-width: 1px;
             border-radius: 6px;
+            height: 32px;
             HorizontalBox {
                 padding-left: 8px;
                 padding-right: 10px;
+                padding-top: 0;
+                padding-bottom: 0;
                 spacing: 6px;
                 Image {
                     source: @image-url("icons/circle-alert.svg");
-                    width: 16px;
-                    height: 16px;
+                    width: 14px;
+                    height: 14px;
                     colorize: GhTheme.t.danger;
+                    y: (parent.height - self.height) / 2;
                 }
                 Text {
-                    text: "DCS.exe is running (PID " + AppState.dcs-running-pid + ") — remap disabled";
+                    text: "DCS.exe running (PID \{AppState.dcs-running-pid})";
+                    font-size: 11px;
                     color: GhTheme.t.danger-text;
                     vertical-alignment: center;
                 }
             }
         }
         Button {
+            height: 32px;
             icon: @image-url("icons/refresh-cw.svg");
             colorize-icon: true;
-            text: AppState.scanning ? "Scanning..." : "Rescan";
+            text: AppState.scanning ? "Scanning…" : "Rescan";
             enabled: !AppState.scanning && !AppState.applying;
             clicked => { AppState.rescan(); }
         }
         Button {
+            height: 32px;
             icon: @image-url("icons/undo-2.svg");
             colorize-icon: true;
             text: "Undo last";
             enabled: !AppState.applying;
             clicked => { AppState.undo-last(); }
-        }
-    }
-}
-
-// -------------------------------------------------- InstallsPanel ----
-
-component InstallsPanel inherits Rectangle {
-    height: 32px + installs-vbox.preferred-height;
-    background: GhTheme.t.bg;
-    Rectangle {
-        x: 0; y: parent.height - 1px;
-        width: parent.width; height: 1px;
-        background: GhTheme.t.border;
-    }
-    installs-vbox := VerticalBox {
-        padding: 8px;
-        spacing: 4px;
-        for inst[i] in AppState.installs: HorizontalBox {
-            padding: 0;
-            spacing: 8px;
-            Text {
-                text: inst.label;
-                font-weight: 700;
-                width: 130px;
-                vertical-alignment: center;
-                color: GhTheme.t.text;
-            }
-            Text {
-                text: inst.input-root;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                color: GhTheme.t.text;
-                font-family: "Consolas";
-                font-size: 11px;
-            }
-            Text {
-                text: inst.aircraft-count + " aircraft · " + inst.device-count + " files";
-                color: GhTheme.t.text-muted;
-                vertical-alignment: center;
-            }
-        }
-        if AppState.installs.length == 0: Text {
-            text: "No DCS installs discovered. Did you launch DCS at least once?";
-            color: GhTheme.t.text-muted;
         }
     }
 }
@@ -642,6 +669,7 @@ component DiffPane inherits Rectangle {
                 }
                 Rectangle { horizontal-stretch: 1; }
                 Button {
+                    height: 32px;
                     icon: @image-url("icons/align-left.svg");
                     colorize-icon: true;
                     text: "Inline";
@@ -649,6 +677,7 @@ component DiffPane inherits Rectangle {
                     clicked => { AppState.diff-mode = 0; }
                 }
                 Button {
+                    height: 32px;
                     icon: @image-url("icons/columns-2.svg");
                     colorize-icon: true;
                     text: "Split";
@@ -656,6 +685,7 @@ component DiffPane inherits Rectangle {
                     clicked => { AppState.diff-mode = 1; }
                 }
                 Button {
+                    height: 32px;
                     icon: @image-url("icons/list-filter.svg");
                     colorize-icon: true;
                     text: AppState.show-context ? "All lines" : "Changed only";
@@ -910,18 +940,20 @@ component DetailHeader inherits Rectangle {
         Rectangle { horizontal-stretch: 1; }
         // Apply-scope cycle button.
         if AppState.selected-index >= 0: Button {
+            height: 32px;
             icon: AppState.apply-scope == 0
                 ? @image-url("icons/layers.svg")
                 : @image-url("icons/target.svg");
             colorize-icon: true;
             text: AppState.apply-scope == 0
-                ? "Apply: all aircraft (\{AppState.affected-aircraft-count})"
-                : "Apply: this aircraft only";
+                ? "All aircraft (\{AppState.affected-aircraft-count})"
+                : "This aircraft only";
             clicked => {
                 AppState.apply-scope = (AppState.apply-scope + 1).mod(2);
             }
         }
         if AppState.selected-index >= 0 && !AppState.conflicts[AppState.selected-index].is-orphan: Button {
+            height: 32px;
             text: "Use A (" + (AppState.conflicts[AppState.selected-index].candidate-a-live ? "live" : "stale") + ")";
             enabled: !AppState.dcs-running && !AppState.applying;
             clicked => {
@@ -935,6 +967,7 @@ component DetailHeader inherits Rectangle {
             }
         }
         if AppState.selected-index >= 0 && !AppState.conflicts[AppState.selected-index].is-orphan: Button {
+            height: 32px;
             text: "Use B (" + (AppState.conflicts[AppState.selected-index].candidate-b-live ? "live" : "stale") + ")";
             enabled: !AppState.dcs-running && !AppState.applying;
             clicked => {
@@ -948,6 +981,7 @@ component DetailHeader inherits Rectangle {
             }
         }
         if AppState.selected-index >= 0 && AppState.conflicts[AppState.selected-index].is-orphan: Button {
+            height: 32px;
             text: "Remap to live";
             primary: true;
             enabled: !AppState.dcs-running && !AppState.applying;
@@ -962,12 +996,13 @@ component DetailHeader inherits Rectangle {
     }
 }
 
-// Strip under the detail header listing every other Active device in the
-// selected aircraft+subtype. Helps the user see what else is configured for
-// that aircraft alongside the device they're remapping.
-component AircraftContextStrip inherits Rectangle {
-    height: AppState.aircraft-devices.length > 0 ? 36px : 0px;
-    visible: AppState.aircraft-devices.length > 0;
+// Strip under the detail header showing every aircraft folder that has the
+// SELECTED device configured. These are the aircraft a remap would touch
+// when "Apply: all aircraft" is selected; the user's current aircraft is
+// highlighted distinctly.
+component AffectsAircraftStrip inherits Rectangle {
+    height: AppState.affected-aircraft.length > 0 ? 36px : 0px;
+    visible: AppState.affected-aircraft.length > 0;
     background: GhTheme.t.bg;
     Rectangle {
         x: 0; y: parent.height - 1px;
@@ -977,12 +1012,15 @@ component AircraftContextStrip inherits Rectangle {
     HorizontalBox {
         padding-left: 12px;
         padding-right: 12px;
+        padding-top: 0;
+        padding-bottom: 0;
         spacing: 6px;
         Text {
-            text: "Also configured here:";
+            text: "Affects:";
             font-size: 11px;
             color: GhTheme.t.text-muted;
             vertical-alignment: center;
+            width: 50px;
         }
         Flickable {
             horizontal-stretch: 1;
@@ -990,31 +1028,21 @@ component AircraftContextStrip inherits Rectangle {
             ctx-row := HorizontalBox {
                 padding: 0;
                 spacing: 4px;
-                for d[i] in AppState.aircraft-devices: Rectangle {
+                for a[i] in AppState.affected-aircraft: Rectangle {
                     height: 22px;
+                    y: (parent.height - self.height) / 2;
                     border-radius: 11px;
-                    border-width: 1px;
-                    border-color: d.has-conflict
-                        ? GhTheme.t.warning
-                        : (d.is-live ? GhTheme.t.diff-add-symbol : GhTheme.t.border);
-                    background: d.has-conflict
-                        ? GhTheme.t.warning-soft
-                        : (d.is-live ? GhTheme.t.diff-add-bg : GhTheme.t.surface);
+                    border-width: a.is-selected ? 2px : 1px;
+                    border-color: a.is-selected ? GhTheme.t.accent : GhTheme.t.border;
+                    background: a.is-selected ? GhTheme.t.accent-soft : GhTheme.t.surface;
                     HorizontalBox {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        spacing: 4px;
+                        padding-left: 10px;
+                        padding-right: 10px;
                         Text {
-                            text: d.device-name;
+                            text: a.name;
                             font-size: 11px;
-                            color: GhTheme.t.text;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: d.is-live ? "live" : "stale";
-                            font-size: 9px;
-                            font-weight: 700;
-                            color: d.is-live ? GhTheme.t.diff-add-symbol : GhTheme.t.text-muted;
+                            font-weight: a.is-selected ? 700 : 400;
+                            color: a.is-selected ? GhTheme.t.accent : GhTheme.t.text;
                             vertical-alignment: center;
                         }
                     }
@@ -1028,100 +1056,190 @@ component AircraftContextStrip inherits Rectangle {
 
 component PlanDialog inherits Rectangle {
     background: #00000060;
-    HorizontalBox {
-        Rectangle { horizontal-stretch: 1; }
-        Rectangle {
-            background: GhTheme.t.bg;
-            border-color: GhTheme.t.border;
-            border-width: 1px;
-            border-radius: 8px;
-            width: 760px;
-            max-height: 640px;
-            VerticalBox {
-                padding: 18px;
-                spacing: 10px;
-                Text {
-                    text: "Confirm remap";
-                    font-size: 16px;
-                    font-weight: 700;
-                    color: GhTheme.t.text;
-                }
-                Text {
-                    text: AppState.plan-summary.device-name + "  (" + AppState.plan-summary.aircraft-count + " aircraft, " + AppState.plan-summary.mutation-count + " mutations)";
-                    font-size: 12px;
-                    color: GhTheme.t.text-muted;
-                }
-                Text {
-                    text: "From: " + AppState.plan-summary.from-guid;
-                    font-family: "Consolas";
-                    font-size: 11px;
-                    color: GhTheme.t.text;
-                }
-                Text {
-                    text: " To:  " + AppState.plan-summary.to-guid;
-                    font-family: "Consolas";
-                    font-size: 11px;
-                    color: GhTheme.t.text;
-                }
-                Text {
-                    text: "Backups will be written to:";
-                    font-size: 11px;
-                    color: GhTheme.t.text-muted;
-                }
-                Text {
-                    text: AppState.plan-summary.backup-dir;
-                    font-family: "Consolas";
-                    font-size: 10px;
-                    color: GhTheme.t.text;
-                    wrap: word-wrap;
-                }
-                Rectangle {
-                    height: 260px;
-                    background: GhTheme.t.surface;
-                    border-color: GhTheme.t.border;
-                    border-width: 1px;
-                    border-radius: 6px;
-                    ScrollView {
-                        x: 1px; y: 1px;
-                        width: parent.width - 2px;
-                        height: parent.height - 2px;
-                        VerticalBox {
-                            padding: 6px;
-                            spacing: 1px;
-                            for line[i] in AppState.plan-summary.lines: Text {
-                                text: line;
-                                font-family: "Consolas";
-                                font-size: 10px;
-                                color: GhTheme.t.text;
+    VerticalBox {
+        padding: 0;
+        spacing: 0;
+        Rectangle { vertical-stretch: 1; }
+        HorizontalBox {
+            padding: 0;
+            spacing: 0;
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                background: GhTheme.t.bg;
+                border-color: GhTheme.t.border;
+                border-width: 1px;
+                border-radius: 8px;
+                width: 720px;
+                height: dialog-content.preferred-height + 24px;
+                dialog-content := VerticalBox {
+                    padding: 16px;
+                    spacing: 8px;
+                    // Title row.
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 10px;
+                        Text {
+                            text: "Confirm remap";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: GhTheme.t.text;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text {
+                            text: "\{AppState.plan-summary.aircraft-count} aircraft · \{AppState.plan-summary.mutation-count} mutations";
+                            font-size: 11px;
+                            color: GhTheme.t.text-muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: GhTheme.t.border-muted;
+                    }
+                    // Two compact rows: device + GUID pair.
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 6px;
+                        Text {
+                            text: "Device";
+                            font-size: 11px;
+                            width: 50px;
+                            color: GhTheme.t.text-muted;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: AppState.plan-summary.device-name;
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: GhTheme.t.text;
+                            vertical-alignment: center;
+                        }
+                    }
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 6px;
+                        Text {
+                            text: "From";
+                            font-size: 11px;
+                            width: 50px;
+                            color: GhTheme.t.text-muted;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: AppState.plan-summary.from-guid;
+                            font-family: "Consolas";
+                            font-size: 11px;
+                            color: GhTheme.t.text;
+                            vertical-alignment: center;
+                        }
+                    }
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 6px;
+                        Text {
+                            text: "To";
+                            font-size: 11px;
+                            width: 50px;
+                            color: GhTheme.t.text-muted;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: AppState.plan-summary.to-guid;
+                            font-family: "Consolas";
+                            font-size: 11px;
+                            color: GhTheme.t.diff-add-symbol;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 6px;
+                        Text {
+                            text: "Backup";
+                            font-size: 11px;
+                            width: 50px;
+                            color: GhTheme.t.text-muted;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: AppState.plan-summary.backup-dir;
+                            font-family: "Consolas";
+                            font-size: 10px;
+                            color: GhTheme.t.text-muted;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: GhTheme.t.border-muted;
+                    }
+                    Text {
+                        text: "Mutations (\{AppState.plan-summary.lines.length})";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: GhTheme.t.text-muted;
+                    }
+                    Rectangle {
+                        height: 220px;
+                        background: GhTheme.t.surface;
+                        border-color: GhTheme.t.border;
+                        border-width: 1px;
+                        border-radius: 6px;
+                        ScrollView {
+                            x: 1px; y: 1px;
+                            width: parent.width - 2px;
+                            height: parent.height - 2px;
+                            VerticalBox {
+                                padding: 6px;
+                                spacing: 0;
+                                for line[i] in AppState.plan-summary.lines: Text {
+                                    text: line;
+                                    font-family: "Consolas";
+                                    font-size: 10px;
+                                    color: GhTheme.t.text;
+                                    overflow: elide;
+                                    height: 14px;
+                                }
                             }
                         }
                     }
-                }
-                HorizontalBox {
-                    Rectangle { horizontal-stretch: 1; }
-                    Button {
-                        icon: @image-url("icons/x.svg");
-                        colorize-icon: true;
-                        text: "Cancel";
-                        clicked => { AppState.cancel-apply(); }
+                    if AppState.last-result != "": Text {
+                        text: AppState.last-result;
+                        font-size: 11px;
+                        color: GhTheme.t.text;
+                        wrap: word-wrap;
                     }
-                    Button {
-                        icon: @image-url("icons/check.svg");
-                        colorize-icon: true;
-                        text: AppState.applying ? "Applying..." : "Confirm — apply remap";
-                        primary: true;
-                        enabled: !AppState.applying && !AppState.dcs-running;
-                        clicked => { AppState.confirm-apply(); }
+                    HorizontalBox {
+                        padding: 0;
+                        padding-top: 4px;
+                        spacing: 8px;
+                        Rectangle { horizontal-stretch: 1; }
+                        Button {
+                            height: 32px;
+                            icon: @image-url("icons/x.svg");
+                            colorize-icon: true;
+                            text: "Cancel";
+                            clicked => { AppState.cancel-apply(); }
+                        }
+                        Button {
+                            height: 32px;
+                            icon: @image-url("icons/check.svg");
+                            colorize-icon: true;
+                            text: AppState.applying ? "Applying…" : "Confirm — apply remap";
+                            primary: true;
+                            enabled: !AppState.applying && !AppState.dcs-running;
+                            clicked => { AppState.confirm-apply(); }
+                        }
                     }
-                }
-                if AppState.last-result != "": Text {
-                    text: AppState.last-result;
-                    color: GhTheme.t.text;
-                    wrap: word-wrap;
                 }
             }
+            Rectangle { horizontal-stretch: 1; }
         }
-        Rectangle { horizontal-stretch: 1; }
+        Rectangle { vertical-stretch: 1; }
     }
 }
 
@@ -1142,8 +1260,7 @@ export component App inherits Window {
     VerticalBox {
         padding: 0;
         spacing: 0;
-        StatusBar {}
-        InstallsPanel {}
+        AppHeader {}
         HorizontalBox {
             padding: 0;
             spacing: 0;
@@ -1152,7 +1269,7 @@ export component App inherits Window {
                 padding: 0;
                 spacing: 0;
                 DetailHeader {}
-                AircraftContextStrip {}
+                AffectsAircraftStrip {}
                 DiffPane {
                     vertical-stretch: 1;
                 }

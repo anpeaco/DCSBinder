@@ -1030,6 +1030,8 @@ dependencies = [
  "similar",
  "slint",
  "slint-build",
+ "time",
+ "uuid",
 ]
 
 [[package]]
