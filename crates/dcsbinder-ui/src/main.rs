@@ -46,17 +46,21 @@ struct Item {
     live_guid: Option<String>,
 }
 
+const FILTER_ALL: &str = "(All)";
+
 #[derive(Default, Clone)]
 struct AppData {
     installs: Vec<config::DcsInstall>,
     scanned_files: Vec<ScannedFile>,
     live_devices: Vec<LiveDevice>,
-    /// Unfiltered items. The UI sees a filtered view derived from `filter`.
+    /// Unfiltered items. The UI sees a filtered view.
     items: Vec<Item>,
-    /// Current filter text (case-folded). Empty = no filter.
-    filter: String,
     /// Category filter: 0 = all, 1 = conflicts only, 2 = orphans only.
     category: i32,
+    /// Aircraft dropdown selection. Empty or "(All)" means no filter.
+    aircraft_filter: String,
+    /// Device-name dropdown selection. Empty or "(All)" means no filter.
+    device_filter: String,
 }
 
 #[derive(Clone)]
@@ -306,14 +310,28 @@ fn wire_callbacks(
         });
     }
 
-    // filter-changed
+    // aircraft-filter-changed
     {
         let weak = app.as_weak();
         let state = state.clone();
-        app_state.on_filter_changed(move |text: SharedString| {
+        app_state.on_aircraft_filter_changed(move |v: SharedString| {
             let Some(app) = weak.upgrade() else { return };
             let mut st = state.lock().unwrap();
-            st.filter = text.to_string().to_lowercase();
+            st.aircraft_filter = v.to_string();
+            let data = st.clone();
+            drop(st);
+            populate_conflicts_only(&app, &data);
+        });
+    }
+
+    // device-filter-changed
+    {
+        let weak = app.as_weak();
+        let state = state.clone();
+        app_state.on_device_filter_changed(move |v: SharedString| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut st = state.lock().unwrap();
+            st.device_filter = v.to_string();
             let data = st.clone();
             drop(st);
             populate_conflicts_only(&app, &data);
@@ -414,8 +432,9 @@ fn trigger_rescan(app: &App, state: Arc<Mutex<AppData>>) {
         // doesn't surprise the user by clearing their search.
         {
             let st = state.lock().unwrap();
-            new_state.filter.clone_from(&st.filter);
             new_state.category = st.category;
+            new_state.aircraft_filter.clone_from(&st.aircraft_filter);
+            new_state.device_filter.clone_from(&st.device_filter);
         }
         let weak2 = weak.clone();
         let state2 = state.clone();
@@ -451,8 +470,9 @@ fn perform_scan() -> AppData {
         scanned_files,
         live_devices,
         items,
-        filter: String::new(),
         category: 0,
+        aircraft_filter: FILTER_ALL.to_string(),
+        device_filter: FILTER_ALL.to_string(),
     }
 }
 
@@ -499,8 +519,11 @@ fn build_items(conflicts: &[Conflict], orphans: &[Orphan], live: &[(String, Guid
     items
 }
 
+fn filter_pass(filter: &str, value: &str) -> bool {
+    filter.is_empty() || filter == FILTER_ALL || filter == value
+}
+
 fn filtered_items(data: &AppData) -> Vec<&Item> {
-    let needle = &data.filter;
     data.items
         .iter()
         .filter(|i| match data.category {
@@ -508,12 +531,8 @@ fn filtered_items(data: &AppData) -> Vec<&Item> {
             2 => i.orphan_target_guid.is_some(), // orphans only
             _ => true,
         })
-        .filter(|i| {
-            needle.is_empty()
-                || i.aircraft.to_lowercase().contains(needle)
-                || i.device_name.to_lowercase().contains(needle)
-                || i.subtype.as_str().contains(needle)
-        })
+        .filter(|i| filter_pass(&data.aircraft_filter, &i.aircraft))
+        .filter(|i| filter_pass(&data.device_filter, &i.device_name))
         .collect()
 }
 
@@ -532,8 +551,29 @@ fn populate_conflicts_only(app: &App, data: &AppData) {
     app_state.set_sbs_rows(ModelRc::from(Rc::new(VecModel::from(Vec::<SbsRow>::new()))));
 }
 
+fn populate_filter_choices(app: &App, data: &AppData) {
+    use std::collections::BTreeSet;
+    let app_state = app.global::<AppState>();
+    let mut aircrafts: BTreeSet<&str> = data.items.iter().map(|i| i.aircraft.as_str()).collect();
+    let mut devices: BTreeSet<&str> = data.items.iter().map(|i| i.device_name.as_str()).collect();
+    // Inject "(All)" as first option.
+    let aircraft_choices: Vec<SharedString> = std::iter::once(SharedString::from(FILTER_ALL))
+        .chain(aircrafts.iter().map(|s| SharedString::from(*s)))
+        .collect();
+    let device_choices: Vec<SharedString> = std::iter::once(SharedString::from(FILTER_ALL))
+        .chain(devices.iter().map(|s| SharedString::from(*s)))
+        .collect();
+    let _ = (&mut aircrafts, &mut devices); // silence "must use" if added later.
+    app_state.set_aircraft_choices(ModelRc::from(Rc::new(VecModel::from(aircraft_choices))));
+    app_state.set_device_choices(ModelRc::from(Rc::new(VecModel::from(device_choices))));
+    app_state.set_aircraft_filter(SharedString::from(data.aircraft_filter.as_str()));
+    app_state.set_device_filter(SharedString::from(data.device_filter.as_str()));
+}
+
 fn populate_ui_models(app: &App, data: &AppData) {
     let app_state = app.global::<AppState>();
+
+    populate_filter_choices(app, data);
 
     let install_rows: Vec<InstallInfo> = data
         .installs

@@ -10,7 +10,7 @@
 // All colors come from GhTheme.t — change values there to retheme the whole UI.
 
 import { VerticalBox, HorizontalBox, GroupBox, Button, ListView, ScrollView, LineEdit,
-         StandardListView, TextEdit, StandardButton, Palette } from "std-widgets.slint";
+         ComboBox, StandardListView, TextEdit, StandardButton, Palette } from "std-widgets.slint";
 
 // ---------------------------------------------------------------- structs ----
 
@@ -177,9 +177,14 @@ export global AppState {
     in property <length> sbs-content-height:
         18px * (show-context ? sbs-rows.length : sbs-changed-count);
 
-    in-out property <string> filter-text;
     // Category filter: 0 = all, 1 = conflicts only, 2 = orphans only.
     in-out property <int> filter-category: 0;
+    // Aircraft / device dropdown filters. The first entry of each *-choices
+    // list is always "(All)" — meaning no filter on that dimension.
+    in property <[string]> aircraft-choices: ["(All)"];
+    in property <[string]> device-choices: ["(All)"];
+    in-out property <string> aircraft-filter: "(All)";
+    in-out property <string> device-filter: "(All)";
     in-out property <bool> show-context: true;
 
     // Apply-scope: 0 = remap across all aircraft, 1 = remap selected aircraft only.
@@ -202,7 +207,8 @@ export global AppState {
     callback confirm-apply();
     callback cancel-apply();
     callback undo-last();
-    callback filter-changed(string);
+    callback aircraft-filter-changed(string);
+    callback device-filter-changed(string);
     callback category-changed(int);
 }
 
@@ -363,25 +369,54 @@ component ConflictsList inherits Rectangle {
             }
         }
         Rectangle {
-            height: 44px;
+            height: 76px;
             background: GhTheme.t.bg;
-            HorizontalBox {
-                padding-left: 10px;
-                padding-right: 10px;
-                padding-top: 6px;
-                padding-bottom: 6px;
-                spacing: 6px;
-                Image {
-                    source: @image-url("icons/search.svg");
-                    width: 16px;
-                    height: 16px;
-                    colorize: GhTheme.t.text-muted;
-                    y: (parent.height - self.height) / 2;
+            Rectangle {
+                x: 0; y: parent.height - 1px;
+                width: parent.width; height: 1px;
+                background: GhTheme.t.border-muted;
+            }
+            VerticalBox {
+                padding-left: 8px;
+                padding-right: 8px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                spacing: 4px;
+                HorizontalBox {
+                    padding: 0;
+                    spacing: 6px;
+                    Text {
+                        text: "Aircraft";
+                        font-size: 10px;
+                        color: GhTheme.t.text-muted;
+                        width: 50px;
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        model: AppState.aircraft-choices;
+                        current-value <=> AppState.aircraft-filter;
+                        selected(v) => { AppState.aircraft-filter-changed(v); }
+                    }
                 }
-                LineEdit {
-                    placeholder-text: "Filter by aircraft or device name…";
-                    text <=> AppState.filter-text;
-                    edited(text) => { AppState.filter-changed(text); }
+                HorizontalBox {
+                    padding: 0;
+                    spacing: 6px;
+                    Text {
+                        text: "Device";
+                        font-size: 10px;
+                        color: GhTheme.t.text-muted;
+                        width: 50px;
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        model: AppState.device-choices;
+                        current-value <=> AppState.device-filter;
+                        selected(v) => { AppState.device-filter-changed(v); }
+                    }
                 }
             }
         }
