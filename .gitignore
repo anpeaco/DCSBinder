@@ -5,6 +5,9 @@ Cargo.lock.bak
 # Claude Code session state
 /.claude/
 
+# Temp commit message files
+/.commitmsg.tmp
+
 # IDE
 .idea/
 .vscode/*
