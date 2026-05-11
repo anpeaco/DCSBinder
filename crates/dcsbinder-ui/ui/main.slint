@@ -1282,10 +1282,12 @@ component PlanDialog inherits Rectangle {
 
 export component App inherits Window {
     title: "DCSBinder";
-    preferred-width: 1280px;
-    preferred-height: 800px;
-    min-width: 900px;
-    min-height: 540px;
+    // Use explicit width/height for the initial size. Slint's preferred-*
+    // was being clamped to min-width by the layout pass before any item was
+    // selected, leaving the window unresizable. width/height set the initial
+    // size; the window remains freely user-resizable from there.
+    width: 1280px;
+    height: 800px;
     background: GhTheme.t.bg;
 
     init => {
