@@ -4,6 +4,7 @@
 // devices on a background thread, then drives the Slint UI from the main
 // (event-loop) thread.
 
+// Panic hook (below) logs to %TEMP%\dcsbinder-ui-panic.txt so silent exits are diagnosable.
 #![windows_subsystem = "windows"]
 #![allow(
     clippy::cast_possible_truncation,
@@ -58,7 +59,36 @@ struct PendingApply {
     manifest: Manifest,
 }
 
+/// Log panics to %TEMP%\dcsbinder-ui-panic.txt. The `windows_subsystem = "windows"`
+/// attribute disconnects this binary from any console, so an uncaught panic would
+/// otherwise vanish without trace.
+fn install_panic_hook() {
+    let log_path = std::env::temp_dir().join("dcsbinder-ui-panic.txt");
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let msg = format!(
+            "[{}] panic: {info}\nbacktrace:\n{backtrace}\n\n",
+            chrono_like_timestamp(),
+        );
+        let _ = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&log_path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, msg.as_bytes()));
+    }));
+}
+
+fn chrono_like_timestamp() -> String {
+    // Avoid pulling chrono just for a startup log timestamp.
+    use std::time::SystemTime;
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format!("unix={secs}")
+}
+
 fn main() -> Result<()> {
+    install_panic_hook();
     let app = App::new()?;
     let state = Arc::new(Mutex::new(AppData::default()));
     let pending = Arc::new(Mutex::new(None::<PendingApply>));
@@ -99,14 +129,16 @@ fn wire_callbacks(
             let st = state.lock().unwrap();
             let app_state = app.global::<AppState>();
             app_state.set_selected_index(idx);
-            let segments = if let Some(item) = st.items.get(idx as usize) {
-                compute_diff_segments(item)
+            let (segments, sbs) = if let Some(item) = st.items.get(idx as usize) {
+                compute_diffs(item)
             } else {
-                Vec::new()
+                (Vec::new(), Vec::new())
             };
             drop(st);
             let m: Rc<VecModel<DiffSegment>> = Rc::new(VecModel::from(segments));
             app_state.set_diff_segments(ModelRc::from(m));
+            let s: Rc<VecModel<SbsRow>> = Rc::new(VecModel::from(sbs));
+            app_state.set_sbs_rows(ModelRc::from(s));
         });
     }
 
@@ -434,7 +466,23 @@ fn item_to_row(item: &Item) -> ConflictRow {
     }
 }
 
-fn compute_diff_segments(item: &Item) -> Vec<DiffSegment> {
+fn flush_pending(dels: &mut Vec<String>, ins: &mut Vec<String>, sbs: &mut Vec<SbsRow>) {
+    let max = dels.len().max(ins.len());
+    for i in 0..max {
+        let left = dels.get(i).cloned();
+        let right = ins.get(i).cloned();
+        sbs.push(SbsRow {
+            left_text: SharedString::from(left.clone().unwrap_or_default()),
+            right_text: SharedString::from(right.clone().unwrap_or_default()),
+            left_kind: if left.is_some() { 1 } else { 2 },
+            right_kind: if right.is_some() { 1 } else { 2 },
+        });
+    }
+    dels.clear();
+    ins.clear();
+}
+
+fn compute_diffs(item: &Item) -> (Vec<DiffSegment>, Vec<SbsRow>) {
     let (a_bytes, b_bytes) = match item.candidates.as_slice() {
         [] => (Vec::new(), Vec::new()),
         [only] => (std::fs::read(&only.path).unwrap_or_default(), Vec::new()),
@@ -446,22 +494,50 @@ fn compute_diff_segments(item: &Item) -> Vec<DiffSegment> {
     let a_text = String::from_utf8_lossy(&a_bytes);
     let b_text = String::from_utf8_lossy(&b_bytes);
     let diff = TextDiff::from_lines(&a_text, &b_text);
-    let mut out = Vec::new();
+
+    let mut inline: Vec<DiffSegment> = Vec::new();
+    let mut sbs: Vec<SbsRow> = Vec::new();
+    let mut pending_del: Vec<String> = Vec::new();
+    let mut pending_ins: Vec<String> = Vec::new();
+
     for change in diff.iter_all_changes() {
-        let kind = match change.tag() {
-            ChangeTag::Equal => 0,
-            ChangeTag::Insert => 1,
-            ChangeTag::Delete => 2,
-        };
-        let text = change.to_string();
-        // Strip trailing newline for cleaner row rendering.
-        let text = text.trim_end_matches('\n').to_string();
-        out.push(DiffSegment {
-            text: SharedString::from(text),
-            kind,
-        });
+        let text = change
+            .to_string()
+            .trim_end_matches('\n')
+            .replace('\t', "    ");
+        match change.tag() {
+            ChangeTag::Equal => {
+                flush_pending(&mut pending_del, &mut pending_ins, &mut sbs);
+                inline.push(DiffSegment {
+                    text: SharedString::from(text.clone()),
+                    kind: 0,
+                });
+                sbs.push(SbsRow {
+                    left_text: SharedString::from(text.clone()),
+                    right_text: SharedString::from(text),
+                    left_kind: 0,
+                    right_kind: 0,
+                });
+            }
+            ChangeTag::Insert => {
+                inline.push(DiffSegment {
+                    text: SharedString::from(text.clone()),
+                    kind: 1,
+                });
+                pending_ins.push(text);
+            }
+            ChangeTag::Delete => {
+                inline.push(DiffSegment {
+                    text: SharedString::from(text.clone()),
+                    kind: 2,
+                });
+                pending_del.push(text);
+            }
+        }
     }
-    out
+    flush_pending(&mut pending_del, &mut pending_ins, &mut sbs);
+
+    (inline, sbs)
 }
 
 fn build_plan(

@@ -37,6 +37,14 @@ struct DiffSegment {
     kind: int,
 }
 
+struct SbsRow {
+    left-text: string,
+    right-text: string,
+    // 0 = context, 1 = changed, 2 = blank (no content on that side)
+    left-kind: int,
+    right-kind: int,
+}
+
 struct PlanSummary {
     device-name: string,
     from-guid: string,
@@ -59,6 +67,9 @@ export global AppState {
     in property <string> selected-source-content;
     in property <string> selected-target-content;
     in property <[DiffSegment]> diff-segments;
+    in property <[SbsRow]> sbs-rows;
+    // 0 = inline (unified), 1 = side-by-side.
+    in-out property <int> diff-mode: 0;
 
     in property <bool> plan-visible: false;
     in property <PlanSummary> plan-summary;
@@ -261,14 +272,26 @@ component DiffPane inherits Rectangle {
             background: Palette.alternate-background;
             HorizontalBox {
                 padding-left: 10px;
+                padding-right: 10px;
                 Text {
-                    text: "Side-by-side diff";
+                    text: "Diff";
                     vertical-alignment: center;
                     font-weight: 600;
                 }
+                Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: "Inline";
+                    primary: AppState.diff-mode == 0;
+                    clicked => { AppState.diff-mode = 0; }
+                }
+                Button {
+                    text: "Side-by-side";
+                    primary: AppState.diff-mode == 1;
+                    clicked => { AppState.diff-mode = 1; }
+                }
             }
         }
-        ScrollView {
+        if AppState.diff-mode == 0: ScrollView {
             VerticalBox {
                 padding: 8px;
                 spacing: 0;
@@ -296,6 +319,62 @@ component DiffPane inherits Rectangle {
                             text: seg.text;
                             font-family: "Consolas";
                             font-size: 11px;
+                        }
+                    }
+                }
+            }
+        }
+        if AppState.diff-mode == 1: ScrollView {
+            VerticalBox {
+                padding: 0;
+                spacing: 0;
+                if AppState.sbs-rows.length == 0: Text {
+                    text: "Select an item on the left to see its content / diff.";
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+                for row[i] in AppState.sbs-rows: HorizontalBox {
+                    padding: 0;
+                    spacing: 0;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background:
+                            row.left-kind == 2 ? #1a1a1a
+                          : row.left-kind == 1 ? #3a1f1f
+                          :                      transparent;
+                        HorizontalBox {
+                            padding: 0;
+                            padding-left: 4px;
+                            Text {
+                                text: row.left-text;
+                                font-family: "Consolas";
+                                font-size: 11px;
+                                color: row.left-kind == 1
+                                    ? #ec7c7c
+                                    : Palette.foreground;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: 1px;
+                        background: Palette.border;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background:
+                            row.right-kind == 2 ? #1a1a1a
+                          : row.right-kind == 1 ? #1f3a1f
+                          :                       transparent;
+                        HorizontalBox {
+                            padding: 0;
+                            padding-left: 4px;
+                            Text {
+                                text: row.right-text;
+                                font-family: "Consolas";
+                                font-size: 11px;
+                                color: row.right-kind == 1
+                                    ? #6cd07c
+                                    : Palette.foreground;
+                            }
                         }
                     }
                 }
