@@ -1301,12 +1301,14 @@ export component App inherits Window {
             spacing: 0;
             ConflictsList {}
             VerticalBox {
+                horizontal-stretch: 1;
                 padding: 0;
                 spacing: 0;
                 DetailHeader {}
                 AffectsAircraftStrip {}
                 DiffPane {
                     vertical-stretch: 1;
+                    horizontal-stretch: 1;
                 }
             }
         }
