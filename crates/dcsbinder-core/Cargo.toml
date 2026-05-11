@@ -20,12 +20,27 @@ indexmap = "2"
 regex = "1"
 walkdir = "2"
 
+# M2 deps: see ADR-004 for why DirectInput (windows crate) instead of SDL2.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_Devices_HumanInterfaceDevice",
+] }
+
+[dependencies.directories]
+version = "5"
+
+[dependencies.sysinfo]
+version = "0.32"
+default-features = false
+features = ["system"]
+
 # Later milestones will add:
-# - device:   sdl2 (bundled)
 # - conflict: similar
 # - remap:    tempfile, blake3
 # - history:  serde, serde_json, uuid, time
-# - config:   directories, sysinfo
 
 [dev-dependencies]
 pretty_assertions = "1"

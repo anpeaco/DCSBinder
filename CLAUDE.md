@@ -10,7 +10,10 @@ Windows reassigns controller GUIDs (USB hub change, driver reinstall, etc.) and 
 
 - **Rust 2021** (workspace, three crates: `dcsbinder-core`, `dcsbinder-cli`, `dcsbinder-ui`).
 - **Slint** for UI (pinned exact version when added).
-- **SDL2** (`sdl2` crate, `bundled` feature) for joystick enumeration.
+- **DirectInput** via the `windows` crate for joystick **discovery** (ADR-004).
+  DCS uses Windows DirectInput instance GUIDs in filenames; SDL2's joystick GUID
+  is a different (vendor/product) format and cannot match. SDL2 is deferred to M4+
+  for runtime/UI input handling.
 - **`full_moon`** for Lua AST parsing; **bespoke serializer** for writing.
 - **`indexmap`, `walkdir`, `regex`, `tempfile`, `blake3`, `serde`/`serde_json`, `uuid` (v7), `sysinfo`, `similar`** for supporting modules.
 - **No alternative stacks.** If a future session is tempted to swap (e.g. `mlua` for `full_moon`, SQLite for JSONL, `egui` for Slint), read the relevant ADR in `docs/DECISIONS/` first.
