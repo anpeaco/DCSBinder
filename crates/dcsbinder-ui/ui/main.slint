@@ -153,8 +153,10 @@ export global AppState {
 
     in-out property <length> inline-viewport-y: 0;
     in-out property <length> sbs-viewport-y: 0;
-    in property <length> inline-content-height: 18px * AppState.diff-segments.length;
-    in property <length> sbs-content-height: 18px * AppState.sbs-rows.length;
+    // Real content heights — bound to each ScrollView's viewport-height so
+    // they reflect collapsed-context rows (changed-only mode) accurately.
+    in-out property <length> inline-content-height: 0;
+    in-out property <length> sbs-content-height: 0;
     in-out property <length> diff-visible-height: 0;
 
     in-out property <string> filter-text;
@@ -483,11 +485,26 @@ component ConflictsList inherits Rectangle {
 component InlineMinimap inherits Rectangle {
     width: 18px;
     background: GhTheme.t.surface;
+
+    // Scrollbar math, single source of truth. `parent.height` is the bar height.
+    property <length> content-h: AppState.inline-content-height;
+    property <length> visible-h: AppState.diff-visible-height;
+    property <length> max-scroll: max(content-h - visible-h, 0px);
+    property <length> thumb-h:
+        content-h > 0px
+            ? max(20px, clamp(visible-h / content-h, 0.0, 1.0) * self.height)
+            : 0px;
+    property <length> max-thumb-top: max(self.height - thumb-h, 0px);
+    // 0..1 — scroll progress.
+    property <float> progress:
+        max-scroll > 0px ? -AppState.inline-viewport-y / max-scroll : 0;
+
     Rectangle {
         x: 0; y: 0;
         width: 1px; height: parent.height;
         background: GhTheme.t.border;
     }
+    // Change markers.
     for seg[i] in AppState.diff-segments: Rectangle {
         x: 3px;
         y: (i * 1.0 / max(AppState.diff-segments.length, 1)) * parent.height;
@@ -498,32 +515,44 @@ component InlineMinimap inherits Rectangle {
                   : seg.kind == 2 ? GhTheme.t.diff-del-symbol
                   :                 GhTheme.t.accent;
     }
+    // Scrollbar thumb.
     Rectangle {
         x: 1px;
-        y: AppState.inline-content-height > 0
-            ? (-AppState.inline-viewport-y / AppState.inline-content-height) * parent.height
-            : 0;
+        y: progress * max-thumb-top;
         width: parent.width - 2px;
-        height: AppState.inline-content-height > 0
-            ? max(20px, (AppState.diff-visible-height / AppState.inline-content-height) * parent.height)
-            : 0;
-        background: #00000018;
-        border-color: #00000040;
+        height: thumb-h;
+        background: ta.has-hover || ta.pressed ? #00000038 : #00000020;
+        border-color: ta.pressed ? GhTheme.t.accent : #00000050;
         border-width: 1px;
-        border-radius: 3px;
+        border-radius: 4px;
+        animate background { duration: 80ms; }
     }
-    TouchArea {
-        clicked => {
-            AppState.inline-viewport-y =
-                -((self.mouse-y / parent.height) * AppState.inline-content-height
-                  - AppState.diff-visible-height / 2);
+    ta := TouchArea {
+        function set-scroll-from-y(y: length) {
+            let target-thumb-top: length = clamp(y - thumb-h / 2, 0px, max-thumb-top);
+            let p: float = max-thumb-top > 0px ? target-thumb-top / max-thumb-top : 0;
+            AppState.inline-viewport-y = -p * max-scroll;
         }
+        clicked => { set-scroll-from-y(self.mouse-y); }
+        moved => { if (self.pressed) { set-scroll-from-y(self.mouse-y); } }
     }
 }
 
 component SbsMinimap inherits Rectangle {
     width: 18px;
     background: GhTheme.t.surface;
+
+    property <length> content-h: AppState.sbs-content-height;
+    property <length> visible-h: AppState.diff-visible-height;
+    property <length> max-scroll: max(content-h - visible-h, 0px);
+    property <length> thumb-h:
+        content-h > 0px
+            ? max(20px, clamp(visible-h / content-h, 0.0, 1.0) * self.height)
+            : 0px;
+    property <length> max-thumb-top: max(self.height - thumb-h, 0px);
+    property <float> progress:
+        max-scroll > 0px ? -AppState.sbs-viewport-y / max-scroll : 0;
+
     Rectangle {
         x: 0; y: 0;
         width: 1px; height: parent.height;
@@ -543,24 +572,23 @@ component SbsMinimap inherits Rectangle {
     }
     Rectangle {
         x: 1px;
-        y: AppState.sbs-content-height > 0
-            ? (-AppState.sbs-viewport-y / AppState.sbs-content-height) * parent.height
-            : 0;
+        y: progress * max-thumb-top;
         width: parent.width - 2px;
-        height: AppState.sbs-content-height > 0
-            ? max(20px, (AppState.diff-visible-height / AppState.sbs-content-height) * parent.height)
-            : 0;
-        background: #00000018;
-        border-color: #00000040;
+        height: thumb-h;
+        background: ta.has-hover || ta.pressed ? #00000038 : #00000020;
+        border-color: ta.pressed ? GhTheme.t.accent : #00000050;
         border-width: 1px;
-        border-radius: 3px;
+        border-radius: 4px;
+        animate background { duration: 80ms; }
     }
-    TouchArea {
-        clicked => {
-            AppState.sbs-viewport-y =
-                -((self.mouse-y / parent.height) * AppState.sbs-content-height
-                  - AppState.diff-visible-height / 2);
+    ta := TouchArea {
+        function set-scroll-from-y(y: length) {
+            let target-thumb-top: length = clamp(y - thumb-h / 2, 0px, max-thumb-top);
+            let p: float = max-thumb-top > 0px ? target-thumb-top / max-thumb-top : 0;
+            AppState.sbs-viewport-y = -p * max-scroll;
         }
+        clicked => { set-scroll-from-y(self.mouse-y); }
+        moved => { if (self.pressed) { set-scroll-from-y(self.mouse-y); } }
     }
 }
 
@@ -625,6 +653,7 @@ component DiffPane inherits Rectangle {
                     vertical-scrollbar-policy: always-off;
                     horizontal-scrollbar-policy: always-off;
                     changed visible-height => { AppState.diff-visible-height = self.visible-height; }
+                    changed viewport-height => { AppState.inline-content-height = self.viewport-height; }
                     VerticalBox {
                         padding: 0;
                         spacing: 0;
@@ -707,6 +736,7 @@ component DiffPane inherits Rectangle {
                     vertical-scrollbar-policy: always-off;
                     horizontal-scrollbar-policy: always-off;
                     changed visible-height => { AppState.diff-visible-height = self.visible-height; }
+                    changed viewport-height => { AppState.sbs-content-height = self.viewport-height; }
                     VerticalBox {
                         padding: 0;
                         spacing: 0;
