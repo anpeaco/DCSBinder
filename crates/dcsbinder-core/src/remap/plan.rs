@@ -303,6 +303,84 @@ fn plan_modifiers_rewrite(
     Ok(())
 }
 
+/// Build a manifest that *only* moves the stale-GUID file(s) for `device_name`
+/// into the backup folder. No `WriteFile` mutations, no `modifiers.lua`
+/// rewrite — the live binding under another GUID is left untouched.
+///
+/// Pass `Some(aircraft)` to scope the discard to a single aircraft, or `None`
+/// to discard the stale file from every aircraft that has one.
+pub fn plan_discard_stale(
+    install_root: &Path,
+    device_name: &str,
+    subtype: Subtype,
+    stale_guid: &Guid,
+    files: &[ScannedFile],
+    backup_root: &Path,
+    restrict_to_aircraft: Option<&str>,
+) -> Result<Manifest, PlanError> {
+    let operation_id = Uuid::now_v7().to_string();
+    let timestamp = time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+    let backup_dir = allocate_backup_dir(backup_root, &timestamp, &operation_id);
+
+    let mut backups: Vec<BackupEntry> = Vec::new();
+    let mut mutations: Vec<Mutation> = Vec::new();
+
+    let candidates: Vec<&ScannedFile> = files
+        .iter()
+        .filter(|f| f.install_root == install_root && f.subtype == Some(subtype))
+        .filter(
+            |f| matches!(&f.status, FileStatus::Active { device_name: n, .. } if n == device_name),
+        )
+        .filter(|f| match restrict_to_aircraft {
+            Some(r) => f.aircraft == r,
+            None => true,
+        })
+        .filter(|f| match &f.status {
+            FileStatus::Active { guid, .. } => guid_matches(guid, stale_guid),
+            _ => false,
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Err(PlanError::NoSourceFile {
+            device_name: device_name.to_string(),
+            source_guid: stale_guid.to_dcs_string(),
+        });
+    }
+
+    for f in &candidates {
+        let hash = file_hash(&f.path)?;
+        let size = file_size(&f.path)?;
+        backups.push(BackupEntry {
+            src: f.path.clone(),
+            backup: backup_path_for(&backup_dir, install_root, &f.path),
+            blake3: hash,
+            size,
+        });
+        mutations.push(Mutation::MoveFile {
+            src: f.path.clone(),
+            dst: archive_path_for(&backup_dir, install_root, &f.path),
+        });
+    }
+
+    Ok(Manifest {
+        version: MANIFEST_VERSION,
+        operation_id,
+        operation: OperationKind::DiscardStale,
+        timestamp,
+        backup_dir,
+        install_root: install_root.to_path_buf(),
+        device_name: device_name.to_string(),
+        subtype: subtype.as_str().to_string(),
+        source_guid: stale_guid.to_dcs_string(),
+        target_guid: String::new(),
+        backups,
+        mutations,
+    })
+}
+
 fn file_hash(path: &Path) -> Result<String, PlanError> {
     hash::file_blake3(path).map_err(|e| PlanError::Hash {
         path: path.to_path_buf(),

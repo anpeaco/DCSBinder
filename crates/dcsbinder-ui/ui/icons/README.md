@@ -19,3 +19,4 @@ can tint them at the call site.
 | `plane.svg` | `plane` | Aircraft summary |
 | `layers.svg` | `layers` | Apply-scope = all aircraft |
 | `target.svg` | `target` | Apply-scope = this aircraft only |
+| `trash-2.svg` | `trash-2` | Discard stale file (moves to backup) |

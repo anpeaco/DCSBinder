@@ -245,16 +245,57 @@ fn wire_callbacks(
                         *pending.lock().unwrap() = Some(PendingApply { manifest });
                         app_state.set_plan_summary(summary);
                         app_state.set_last_result(SharedString::new());
+                        app_state.set_applied(false);
                         app_state.set_plan_visible(true);
                     }
                     Err(e) => {
                         app_state
                             .set_last_result(SharedString::from(format!("plan failed: {e:#}")));
+                        app_state.set_applied(false);
                         app_state.set_plan_visible(true);
                     }
                 }
             },
         );
+    }
+
+    // request-discard-stale
+    {
+        let weak = app.as_weak();
+        let state = state.clone();
+        let pending = pending.clone();
+        app_state.on_request_discard_stale(move |stale_guid: SharedString, scope: i32| {
+            let Some(app) = weak.upgrade() else { return };
+            let app_state = app.global::<AppState>();
+            let st = state.lock().unwrap();
+            let idx = app_state.get_selected_index();
+            let filtered = filtered_items(&st);
+            let Some(item) = filtered.get(idx as usize).map(|i| (*i).clone()) else {
+                return;
+            };
+            let files = st.scanned_files.clone();
+            drop(st);
+            let restrict = if scope == 1 {
+                Some(item.aircraft.clone())
+            } else {
+                None
+            };
+            match build_discard_plan(&item, &files, &stale_guid, restrict.as_deref()) {
+                Ok(manifest) => {
+                    let summary = plan_summary_for_ui(&manifest);
+                    *pending.lock().unwrap() = Some(PendingApply { manifest });
+                    app_state.set_plan_summary(summary);
+                    app_state.set_last_result(SharedString::new());
+                    app_state.set_applied(false);
+                    app_state.set_plan_visible(true);
+                }
+                Err(e) => {
+                    app_state.set_last_result(SharedString::from(format!("plan failed: {e:#}")));
+                    app_state.set_applied(false);
+                    app_state.set_plan_visible(true);
+                }
+            }
+        });
     }
 
     // confirm-apply
@@ -275,6 +316,7 @@ fn wire_callbacks(
             let state2 = state.clone();
             std::thread::spawn(move || {
                 let result = remap::execute(&pa.manifest, true);
+                let succeeded = result.is_ok();
                 let msg = match result {
                     Ok(done_path) => format!(
                         "Applied. Done marker: {}\nUndo: dcsbinder undo --manifest \"{}\"",
@@ -289,6 +331,7 @@ fn wire_callbacks(
                     let Some(app) = weak3.upgrade() else { return };
                     let app_state = app.global::<AppState>();
                     app_state.set_applying(false);
+                    app_state.set_applied(succeeded);
                     app_state.set_last_result(SharedString::from(msg));
                     // Auto-rescan after a successful apply so the conflicts list refreshes.
                     trigger_rescan(&app, state3);
@@ -307,6 +350,7 @@ fn wire_callbacks(
             let s = app.global::<AppState>();
             s.set_plan_visible(false);
             s.set_last_result(SharedString::new());
+            s.set_applied(false);
         });
     }
 
@@ -371,18 +415,21 @@ fn wire_callbacks(
                     *pending.lock().unwrap() = Some(PendingApply { manifest });
                     app_state.set_plan_summary(summary);
                     app_state.set_last_result(SharedString::new());
+                    app_state.set_applied(false);
                     app_state.set_plan_visible(true);
                 }
                 Ok(None) => {
                     app_state.set_last_result(SharedString::from(
                         "Nothing to apply — no items in the current filter have a clear live target.",
                     ));
+                    app_state.set_applied(false);
                     app_state.set_plan_visible(true);
                 }
                 Err(e) => {
                     app_state.set_last_result(SharedString::from(format!(
                         "bulk plan failed: {e:#}"
                     )));
+                    app_state.set_applied(false);
                     app_state.set_plan_visible(true);
                 }
             }
@@ -412,7 +459,10 @@ fn wire_callbacks(
                     let app_state = app.global::<AppState>();
                     app_state.set_applying(false);
                     app_state.set_last_result(SharedString::from(msg));
-                    app_state.set_plan_visible(true); // surface the result
+                    // Undo runs immediately; the dialog only surfaces the
+                    // result, so go straight to the Close button.
+                    app_state.set_applied(true);
+                    app_state.set_plan_visible(true);
                     trigger_rescan(&app, state3);
                 });
             });
@@ -1132,6 +1182,29 @@ fn build_plan(
     )?)
 }
 
+fn build_discard_plan(
+    item: &Item,
+    files: &[ScannedFile],
+    stale_guid_str: &str,
+    restrict_to_aircraft: Option<&str>,
+) -> Result<Manifest> {
+    let stale_guid = Guid::parse_dcs(stale_guid_str)
+        .with_context(|| format!("invalid stale-guid {stale_guid_str}"))?;
+    let backup_root = config::app_data_dir()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve %APPDATA%/DCSBinder"))?
+        .join("backups");
+    std::fs::create_dir_all(&backup_root)?;
+    Ok(remap::plan_discard_stale(
+        &item.install_root,
+        &item.device_name,
+        item.subtype,
+        &stale_guid,
+        files,
+        &backup_root,
+        restrict_to_aircraft,
+    )?)
+}
+
 fn plan_summary_for_ui(manifest: &Manifest) -> PlanSummary {
     let mut lines: Vec<SharedString> = Vec::new();
     for (i, m) in manifest.mutations.iter().enumerate() {
@@ -1161,12 +1234,17 @@ fn plan_summary_for_ui(manifest: &Manifest) -> PlanSummary {
         };
         lines.push(SharedString::from(s));
     }
+    // Count distinct aircraft folders. For a remap that's the parent-of-parent
+    // of each `WriteFile.dst` (`<install>/<aircraft>/<subtype>/<file>`). For a
+    // discard there are no writes, so fall back to the `MoveFile.src` paths,
+    // which sit at the same depth.
     let aircraft_count = manifest
         .mutations
         .iter()
         .filter_map(|m| match m {
             Mutation::WriteFile { dst, .. } => Some(dst.clone()),
-            _ => None,
+            Mutation::MoveFile { src, .. } => Some(src.clone()),
+            Mutation::StringReplace { .. } => None,
         })
         .filter_map(|p| {
             p.parent()
@@ -1176,10 +1254,15 @@ fn plan_summary_for_ui(manifest: &Manifest) -> PlanSummary {
         .collect::<std::collections::HashSet<_>>()
         .len() as i32;
 
+    let to_guid_display = if manifest.target_guid.is_empty() {
+        "(discarded — moved to backup)".to_string()
+    } else {
+        manifest.target_guid.clone()
+    };
     PlanSummary {
         device_name: SharedString::from(manifest.device_name.clone()),
         from_guid: SharedString::from(manifest.source_guid.clone()),
-        to_guid: SharedString::from(manifest.target_guid.clone()),
+        to_guid: SharedString::from(to_guid_display),
         aircraft_count,
         mutation_count: manifest.mutations.len() as i32,
         backup_dir: SharedString::from(manifest.backup_dir.display().to_string()),

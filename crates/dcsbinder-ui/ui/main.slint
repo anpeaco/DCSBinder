@@ -161,6 +161,9 @@ export global AppState {
     in property <bool> plan-visible: false;
     in property <PlanSummary> plan-summary;
     in property <bool> applying: false;
+    // Set true after a successful apply so the dialog can swap its
+    // Cancel / Confirm pair for a single Close button.
+    in property <bool> applied: false;
     in property <string> last-result;
 
     in-out property <length> inline-viewport-y: 0;
@@ -200,6 +203,10 @@ export global AppState {
     callback select-conflict(int);
     // (from-guid, to-guid, scope) — scope: 0 = all aircraft, 1 = single aircraft.
     callback request-plan(string, string, int);
+    // (stale-guid, scope) — discard the stale file(s) without writing a new
+    // binding under the live GUID. Used when the live binding is already
+    // correct and the user just wants the orphaned stale file removed.
+    callback request-discard-stale(string, int);
     // Build a plan that processes every currently-filtered item. Each item
     // picks a sensible default mapping (orphan -> live, conflict -> live one
     // wins). User reviews the plan before confirming.
@@ -425,6 +432,9 @@ component ConflictsList inherits Rectangle {
             VerticalBox {
                 padding: 6px;
                 spacing: 6px;
+                // Pin cards to the top of the scroll area so a short filtered
+                // list does not stretch each card to fill the viewport.
+                alignment: start;
                 for c[i] in AppState.conflicts: Rectangle {
                     background: AppState.selected-index == i ? GhTheme.t.accent-soft : GhTheme.t.bg;
                     border-radius: 6px;
@@ -987,10 +997,18 @@ component DetailHeader inherits Rectangle {
                 AppState.apply-scope = (AppState.apply-scope + 1).mod(2);
             }
         }
+        // The "Use X" buttons adopt that candidate's content under the live
+        // GUID. The candidate that is ALREADY the live one is a no-op
+        // (source == target), so disable it rather than letting the user
+        // click into a "nothing to do" plan-failed dialog. When neither side
+        // is live, fall back to using A's GUID as the target so the action
+        // still produces a meaningful plan.
         if AppState.selected-index >= 0 && !AppState.conflicts[AppState.selected-index].is-orphan: Button {
             height: 32px;
             text: "Use A (" + (AppState.conflicts[AppState.selected-index].candidate-a-live ? "live" : "stale") + ")";
-            enabled: !AppState.dcs-running && !AppState.applying;
+            enabled: !AppState.dcs-running
+                && !AppState.applying
+                && !AppState.conflicts[AppState.selected-index].candidate-a-live;
             clicked => {
                 AppState.request-plan(
                     AppState.conflicts[AppState.selected-index].candidate-a-guid,
@@ -1004,7 +1022,9 @@ component DetailHeader inherits Rectangle {
         if AppState.selected-index >= 0 && !AppState.conflicts[AppState.selected-index].is-orphan: Button {
             height: 32px;
             text: "Use B (" + (AppState.conflicts[AppState.selected-index].candidate-b-live ? "live" : "stale") + ")";
-            enabled: !AppState.dcs-running && !AppState.applying;
+            enabled: !AppState.dcs-running
+                && !AppState.applying
+                && !AppState.conflicts[AppState.selected-index].candidate-b-live;
             clicked => {
                 AppState.request-plan(
                     AppState.conflicts[AppState.selected-index].candidate-b-guid,
@@ -1024,6 +1044,28 @@ component DetailHeader inherits Rectangle {
                 AppState.request-plan(
                     AppState.conflicts[AppState.selected-index].candidate-a-guid,
                     AppState.conflicts[AppState.selected-index].orphan-target-guid,
+                    AppState.apply-scope
+                );
+            }
+        }
+        // "Discard stale" appears only on a conflict where exactly one
+        // candidate is live (the live one is already correct; the stale one
+        // is the obvious cleanup target). It moves the stale file to the
+        // backup folder without writing any new binding.
+        if AppState.selected-index >= 0
+            && !AppState.conflicts[AppState.selected-index].is-orphan
+            && (AppState.conflicts[AppState.selected-index].candidate-a-live
+                != AppState.conflicts[AppState.selected-index].candidate-b-live): Button {
+            height: 32px;
+            icon: @image-url("icons/trash-2.svg");
+            colorize-icon: true;
+            text: "Discard stale";
+            enabled: !AppState.dcs-running && !AppState.applying;
+            clicked => {
+                AppState.request-discard-stale(
+                    AppState.conflicts[AppState.selected-index].candidate-a-live
+                        ? AppState.conflicts[AppState.selected-index].candidate-b-guid
+                        : AppState.conflicts[AppState.selected-index].candidate-a-guid,
                     AppState.apply-scope
                 );
             }
@@ -1253,14 +1295,14 @@ component PlanDialog inherits Rectangle {
                         padding-top: 4px;
                         spacing: 8px;
                         Rectangle { horizontal-stretch: 1; }
-                        Button {
+                        if !AppState.applied: Button {
                             height: 32px;
                             icon: @image-url("icons/x.svg");
                             colorize-icon: true;
                             text: "Cancel";
                             clicked => { AppState.cancel-apply(); }
                         }
-                        Button {
+                        if !AppState.applied: Button {
                             height: 32px;
                             icon: @image-url("icons/check.svg");
                             colorize-icon: true;
@@ -1268,6 +1310,14 @@ component PlanDialog inherits Rectangle {
                             primary: true;
                             enabled: !AppState.applying && !AppState.dcs-running;
                             clicked => { AppState.confirm-apply(); }
+                        }
+                        if AppState.applied: Button {
+                            height: 32px;
+                            icon: @image-url("icons/check.svg");
+                            colorize-icon: true;
+                            text: "Close";
+                            primary: true;
+                            clicked => { AppState.cancel-apply(); }
                         }
                     }
                 }
@@ -1282,36 +1332,47 @@ component PlanDialog inherits Rectangle {
 
 export component App inherits Window {
     title: "DCSBinder";
-    // Use explicit width/height for the initial size. Slint's preferred-*
-    // was being clamped to min-width by the layout pass before any item was
-    // selected, leaving the window unresizable. width/height set the initial
-    // size; the window remains freely user-resizable from there.
-    width: 1280px;
-    height: 800px;
+    // preferred-* gives the initial window size while leaving it resizable.
+    // Setting `width`/`height` directly on a Window pins it (no resize).
+    // Setting `min-width` was previously clamping the window narrow because
+    // the App's content had no layout-driven width preference of its own.
+    // With the App now using explicit positioning, the window size is driven
+    // entirely by these preferred-* values.
+    preferred-width: 1280px;
+    preferred-height: 800px;
     background: GhTheme.t.bg;
 
     init => {
         Palette.color-scheme = ColorScheme.light;
     }
 
-    VerticalBox {
-        padding: 0;
-        spacing: 0;
-        AppHeader {}
-        HorizontalBox {
+    // Top-level layout uses explicit positioning rather than nested layout
+    // boxes. Slint's HorizontalBox was leaving the right-hand column at its
+    // intrinsic preferred width (the placeholder text) instead of stretching
+    // it to fill the remaining space, leaving a large blank gutter at the
+    // right of the window. Explicit width math sidesteps that ambiguity.
+    AppHeader {
+        x: 0; y: 0;
+        width: parent.width;
+    }
+    ConflictsList {
+        x: 0;
+        y: 56px;
+        height: parent.height - 56px;
+    }
+    Rectangle {
+        x: 460px;
+        y: 56px;
+        width: parent.width - 460px;
+        height: parent.height - 56px;
+        VerticalBox {
             padding: 0;
             spacing: 0;
-            ConflictsList {}
-            VerticalBox {
+            DetailHeader {}
+            AffectsAircraftStrip {}
+            DiffPane {
+                vertical-stretch: 1;
                 horizontal-stretch: 1;
-                padding: 0;
-                spacing: 0;
-                DetailHeader {}
-                AffectsAircraftStrip {}
-                DiffPane {
-                    vertical-stretch: 1;
-                    horizontal-stretch: 1;
-                }
             }
         }
     }

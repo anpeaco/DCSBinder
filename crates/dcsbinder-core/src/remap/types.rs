@@ -44,6 +44,10 @@ pub struct Manifest {
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
     Remap,
+    /// Move the source-GUID files into the backup folder without writing any
+    /// replacement. Used when the live binding is already correct and the
+    /// user just wants the orphaned stale file(s) gone.
+    DiscardStale,
     Undo,
 }
 
