@@ -76,6 +76,20 @@ export global AppState {
     in property <bool> applying: false;
     in property <string> last-result;
 
+    // Two-way scroll state for the diff pane (so the minimap can drive scroll
+    // and show a viewport thumb).
+    in-out property <length> inline-viewport-y: 0;
+    in-out property <length> sbs-viewport-y: 0;
+    // Heights of the actual content (pixel-accurate; we know each row is 18px).
+    in property <length> inline-content-height: 18px * AppState.diff-segments.length;
+    in property <length> sbs-content-height: 18px * AppState.sbs-rows.length;
+    // The currently-visible diff viewport pixel height. Each ScrollView
+    // assigns its own visible-height into this so the minimap can size its thumb.
+    in-out property <length> diff-visible-height: 0;
+
+    // Conflicts filter (case-insensitive substring across aircraft + device-name).
+    in-out property <string> filter-text;
+
     callback rescan();
     callback select-conflict(int);
     // (from_guid, to_guid) — Rust resolves the rest from the selected conflict.
@@ -83,6 +97,7 @@ export global AppState {
     callback confirm-apply();
     callback cancel-apply();
     callback undo-last();
+    callback filter-changed(string);
 }
 
 component StatusBar inherits Rectangle {
@@ -187,6 +202,21 @@ component ConflictsList inherits Rectangle {
                 }
             }
         }
+        Rectangle {
+            height: 40px;
+            background: Palette.background;
+            HorizontalBox {
+                padding-left: 8px;
+                padding-right: 8px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                LineEdit {
+                    placeholder-text: "Filter by aircraft or device name...";
+                    text <=> AppState.filter-text;
+                    edited(text) => { AppState.filter-changed(text); }
+                }
+            }
+        }
         ScrollView {
             VerticalBox {
                 padding: 6px;
@@ -262,13 +292,14 @@ component ConflictsList inherits Rectangle {
 
 // Thin vertical "minimap" / change-bar shown beside the diff scroll area.
 // Each non-context line in the diff produces a colored mark proportional to
-// its position in the full diff, so the user can spot clusters of changes
-// without scrolling.
+// its position in the full diff. Click anywhere on the strip to jump-scroll.
+// A semi-transparent thumb shows the current viewport position.
 component InlineMinimap inherits Rectangle {
     width: 14px;
     background: #15181c;
     border-color: Palette.border;
     border-width: 1px;
+    // Change markers.
     for seg[i] in AppState.diff-segments: Rectangle {
         x: 2px;
         y: (i * 1.0 / max(AppState.diff-segments.length, 1)) * parent.height;
@@ -278,6 +309,29 @@ component InlineMinimap inherits Rectangle {
         background: seg.kind == 0 ? transparent
                   : seg.kind == 1 ? #6cd07c
                   :                 #ec7c7c;
+    }
+    // Viewport thumb.
+    Rectangle {
+        x: 0;
+        y: AppState.inline-content-height > 0
+            ? (-AppState.inline-viewport-y / AppState.inline-content-height) * parent.height
+            : 0;
+        width: parent.width;
+        height: AppState.inline-content-height > 0
+            ? max(8px, (AppState.diff-visible-height / AppState.inline-content-height) * parent.height)
+            : 0;
+        background: #ffffff20;
+        border-color: #ffffff60;
+        border-width: 1px;
+    }
+    // Click-to-scroll.
+    TouchArea {
+        clicked => {
+            // Center the click position in the viewport.
+            AppState.inline-viewport-y =
+                -((self.mouse-y / parent.height) * AppState.inline-content-height
+                  - AppState.diff-visible-height / 2);
+        }
     }
 }
 
@@ -298,6 +352,26 @@ component SbsMinimap inherits Rectangle {
             :  row.left-kind == 1                         ? #ec7c7c
             :  row.right-kind == 1                        ? #6cd07c
             :                                               transparent;
+    }
+    Rectangle {
+        x: 0;
+        y: AppState.sbs-content-height > 0
+            ? (-AppState.sbs-viewport-y / AppState.sbs-content-height) * parent.height
+            : 0;
+        width: parent.width;
+        height: AppState.sbs-content-height > 0
+            ? max(8px, (AppState.diff-visible-height / AppState.sbs-content-height) * parent.height)
+            : 0;
+        background: #ffffff20;
+        border-color: #ffffff60;
+        border-width: 1px;
+    }
+    TouchArea {
+        clicked => {
+            AppState.sbs-viewport-y =
+                -((self.mouse-y / parent.height) * AppState.sbs-content-height
+                  - AppState.diff-visible-height / 2);
+        }
     }
 }
 
@@ -339,6 +413,8 @@ component DiffPane inherits Rectangle {
                 horizontal-stretch: 1;
                 if AppState.diff-mode == 0: ScrollView {
                     x: 0; y: 0; width: parent.width; height: parent.height;
+                    viewport-y <=> AppState.inline-viewport-y;
+                    changed visible-height => { AppState.diff-visible-height = self.visible-height; }
             VerticalBox {
                 padding: 0;
                 spacing: 0;
@@ -369,6 +445,8 @@ component DiffPane inherits Rectangle {
         }
                 if AppState.diff-mode == 1: ScrollView {
                     x: 0; y: 0; width: parent.width; height: parent.height;
+                    viewport-y <=> AppState.sbs-viewport-y;
+                    changed visible-height => { AppState.diff-visible-height = self.visible-height; }
                     VerticalBox {
                         padding: 0;
                         spacing: 0;

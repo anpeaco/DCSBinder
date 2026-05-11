@@ -51,7 +51,10 @@ struct AppData {
     installs: Vec<config::DcsInstall>,
     scanned_files: Vec<ScannedFile>,
     live_devices: Vec<LiveDevice>,
+    /// Unfiltered items. The UI sees a filtered view derived from `filter`.
     items: Vec<Item>,
+    /// Current filter text (case-folded). Empty = no filter.
+    filter: String,
 }
 
 #[derive(Clone)]
@@ -164,7 +167,8 @@ fn wire_callbacks(
             let st = state.lock().unwrap();
             let app_state = app.global::<AppState>();
             app_state.set_selected_index(idx);
-            let (segments, sbs) = if let Some(item) = st.items.get(idx as usize) {
+            let filtered = filtered_items(&st);
+            let (segments, sbs) = if let Some(item) = filtered.get(idx as usize) {
                 compute_diffs(item)
             } else {
                 (Vec::new(), Vec::new())
@@ -174,6 +178,9 @@ fn wire_callbacks(
             app_state.set_diff_segments(ModelRc::from(m));
             let s: Rc<VecModel<SbsRow>> = Rc::new(VecModel::from(sbs));
             app_state.set_sbs_rows(ModelRc::from(s));
+            // Reset scroll positions for the new selection.
+            app_state.set_inline_viewport_y(0.0);
+            app_state.set_sbs_viewport_y(0.0);
         });
     }
 
@@ -187,7 +194,8 @@ fn wire_callbacks(
             let app_state = app.global::<AppState>();
             let st = state.lock().unwrap();
             let idx = app_state.get_selected_index();
-            let Some(item) = st.items.get(idx as usize).cloned() else {
+            let filtered = filtered_items(&st);
+            let Some(item) = filtered.get(idx as usize).map(|i| (*i).clone()) else {
                 return;
             };
             let files = st.scanned_files.clone();
@@ -261,6 +269,20 @@ fn wire_callbacks(
         });
     }
 
+    // filter-changed
+    {
+        let weak = app.as_weak();
+        let state = state.clone();
+        app_state.on_filter_changed(move |text: SharedString| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut st = state.lock().unwrap();
+            st.filter = text.to_string().to_lowercase();
+            let data = st.clone();
+            drop(st);
+            populate_conflicts_only(&app, &data);
+        });
+    }
+
     // undo-last
     {
         let weak = app.as_weak();
@@ -299,7 +321,10 @@ fn trigger_rescan(app: &App, state: Arc<Mutex<AppData>>) {
 
     let weak = app.as_weak();
     std::thread::spawn(move || {
-        let new_state = perform_scan();
+        let mut new_state = perform_scan();
+        // Preserve the existing filter so a rescan after applying a remap
+        // doesn't surprise the user by clearing their search.
+        new_state.filter.clone_from(&state.lock().unwrap().filter);
         let weak2 = weak.clone();
         let state2 = state.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -334,6 +359,7 @@ fn perform_scan() -> AppData {
         scanned_files,
         live_devices,
         items,
+        filter: String::new(),
     }
 }
 
@@ -380,6 +406,36 @@ fn build_items(conflicts: &[Conflict], orphans: &[Orphan], live: &[(String, Guid
     items
 }
 
+fn filtered_items(data: &AppData) -> Vec<&Item> {
+    if data.filter.is_empty() {
+        return data.items.iter().collect();
+    }
+    let needle = &data.filter;
+    data.items
+        .iter()
+        .filter(|i| {
+            i.aircraft.to_lowercase().contains(needle)
+                || i.device_name.to_lowercase().contains(needle)
+                || i.subtype.as_str().contains(needle)
+        })
+        .collect()
+}
+
+fn populate_conflicts_only(app: &App, data: &AppData) {
+    let app_state = app.global::<AppState>();
+    let rows: Vec<ConflictRow> = filtered_items(data)
+        .iter()
+        .map(|i| item_to_row(i))
+        .collect();
+    app_state.set_conflicts(ModelRc::from(Rc::new(VecModel::from(rows))));
+    // Reset selection: the indices changed.
+    app_state.set_selected_index(-1);
+    app_state.set_diff_segments(ModelRc::from(Rc::new(VecModel::from(
+        Vec::<DiffSegment>::new(),
+    ))));
+    app_state.set_sbs_rows(ModelRc::from(Rc::new(VecModel::from(Vec::<SbsRow>::new()))));
+}
+
 fn populate_ui_models(app: &App, data: &AppData) {
     let app_state = app.global::<AppState>();
 
@@ -399,7 +455,10 @@ fn populate_ui_models(app: &App, data: &AppData) {
         .collect();
     app_state.set_installs(ModelRc::from(Rc::new(VecModel::from(install_rows))));
 
-    let conflict_rows: Vec<ConflictRow> = data.items.iter().map(item_to_row).collect();
+    let conflict_rows: Vec<ConflictRow> = filtered_items(data)
+        .iter()
+        .map(|i| item_to_row(i))
+        .collect();
     app_state.set_conflicts(ModelRc::from(Rc::new(VecModel::from(conflict_rows))));
 
     // Status bar.
