@@ -159,7 +159,6 @@ export global AppState {
     // get the real content height — matches what the renderer lays out.
     in property <int> inline-changed-count: 0;
     in property <int> sbs-changed-count: 0;
-    in-out property <length> diff-visible-height: 0;
 
     in property <length> inline-content-height:
         18px * (show-context ? diff-segments.length : inline-changed-count);
@@ -493,9 +492,10 @@ component InlineMinimap inherits Rectangle {
     width: 18px;
     background: GhTheme.t.surface;
 
-    // Scrollbar math, single source of truth. `parent.height` is the bar height.
+    // Scrollbar math. `self.height` is the bar height AND the diff viewport
+    // height (they're sibling children of the same HorizontalBox).
     property <length> content-h: AppState.inline-content-height;
-    property <length> visible-h: AppState.diff-visible-height;
+    property <length> visible-h: self.height;
     property <length> max-scroll: max(content-h - visible-h, 0px);
     property <length> thumb-h:
         content-h > 0px
@@ -551,7 +551,7 @@ component SbsMinimap inherits Rectangle {
     background: GhTheme.t.surface;
 
     property <length> content-h: AppState.sbs-content-height;
-    property <length> visible-h: AppState.diff-visible-height;
+    property <length> visible-h: self.height;
     property <length> max-scroll: max(content-h - visible-h, 0px);
     property <length> thumb-h:
         content-h > 0px
@@ -660,7 +660,6 @@ component DiffPane inherits Rectangle {
                     viewport-y <=> AppState.inline-viewport-y;
                     vertical-scrollbar-policy: always-off;
                     horizontal-scrollbar-policy: always-off;
-                    changed visible-height => { AppState.diff-visible-height = self.visible-height; }
                     VerticalBox {
                         padding: 0;
                         spacing: 0;
@@ -742,7 +741,6 @@ component DiffPane inherits Rectangle {
                     viewport-y <=> AppState.sbs-viewport-y;
                     vertical-scrollbar-policy: always-off;
                     horizontal-scrollbar-policy: always-off;
-                    changed visible-height => { AppState.diff-visible-height = self.visible-height; }
                     VerticalBox {
                         padding: 0;
                         spacing: 0;
