@@ -4,11 +4,20 @@
 //! Algorithm summary (full detail in `docs/ARCHITECTURE.md`):
 //! 1. Plan (no writes).
 //! 2. Manifest written via `tempfile::NamedTempFile::persist()`. Existence = started.
-//! 3. Backup (full snapshot of affected folder, blake3-hashed).
-//! 4. Write (`tmp → fs::rename`, atomic within NTFS directory).
+//! 3. Backup (full snapshot of every affected file, blake3-verified).
+//! 4. Write (`tmp → fs::rename`, atomic within an NTFS directory).
 //! 5. Move-not-delete (stale-GUID files → backup folder).
 //! 6. Finalize (`manifest.json.done` sibling marker).
 //!
 //! On startup, an un-`.done` manifest triggers the rollback prompt.
-//!
-//! Until M3 lands, this module is a stub.
+
+pub mod execute;
+pub mod hash;
+pub mod plan;
+pub mod recover;
+pub mod types;
+
+pub use execute::{execute, ExecuteError};
+pub use plan::{plan, PlanError};
+pub use recover::{recover, undo, IncompleteOperation, RecoverError, UndoError};
+pub use types::{BackupEntry, Manifest, Mutation, OperationKind, MANIFEST_VERSION};

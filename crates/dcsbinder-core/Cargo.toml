@@ -37,10 +37,30 @@ version = "0.32"
 default-features = false
 features = ["system"]
 
+# M3 deps: safety-critical remap engine.
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1"
+
+[dependencies.uuid]
+version = "1"
+features = ["v7"]
+
+[dependencies.time]
+version = "0.3"
+features = ["formatting", "macros"]
+
+[dependencies.tempfile]
+version = "3"
+
+[dependencies.blake3]
+version = "1"
+
 # Later milestones will add:
-# - conflict: similar
-# - remap:    tempfile, blake3
-# - history:  serde, serde_json, uuid, time
+# - conflict: similar (M5 fuzzy suggestions)
 
 [dev-dependencies]
 pretty_assertions = "1"
