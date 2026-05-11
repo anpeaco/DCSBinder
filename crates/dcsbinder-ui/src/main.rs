@@ -167,15 +167,28 @@ fn wire_callbacks(
             let st = state.lock().unwrap();
             let app_state = app.global::<AppState>();
             app_state.set_selected_index(idx);
+
+            // Clone the selected item out (so we can drop the lock before
+            // I/O-heavy diff computation), then derive everything that needs
+            // the full state (aircraft context + affected count) while still
+            // holding the lock.
             let filtered = filtered_items(&st);
-            let (segments, sbs) = if let Some(item) = filtered.get(idx as usize) {
+            let selected_item: Option<Item> = filtered.get(idx as usize).map(|i| (*i).clone());
+            let (context, affected) = if let Some(item) = selected_item.as_ref() {
+                (
+                    build_aircraft_context(&st, item),
+                    count_affected_aircraft(&st, item),
+                )
+            } else {
+                (Vec::new(), 0)
+            };
+            drop(st);
+
+            let (segments, sbs) = if let Some(item) = selected_item.as_ref() {
                 compute_diffs(item)
             } else {
                 (Vec::new(), Vec::new())
             };
-            drop(st);
-            // Pre-compute "rows that occupy non-zero space" counts so the
-            // minimap can scale correctly when show-context is off.
             let inline_changed = segments.iter().filter(|s| s.kind != 0).count() as i32;
             let sbs_changed = sbs
                 .iter()
@@ -183,6 +196,10 @@ fn wire_callbacks(
                 .count() as i32;
             app_state.set_inline_changed_count(inline_changed);
             app_state.set_sbs_changed_count(sbs_changed);
+
+            let cm: Rc<VecModel<AircraftDevice>> = Rc::new(VecModel::from(context));
+            app_state.set_aircraft_devices(ModelRc::from(cm));
+            app_state.set_affected_aircraft_count(affected);
             let m: Rc<VecModel<DiffSegment>> = Rc::new(VecModel::from(segments));
             app_state.set_diff_segments(ModelRc::from(m));
             let s: Rc<VecModel<SbsRow>> = Rc::new(VecModel::from(sbs));
@@ -198,31 +215,39 @@ fn wire_callbacks(
         let weak = app.as_weak();
         let state = state.clone();
         let pending = pending.clone();
-        app_state.on_request_plan(move |from_guid: SharedString, to_guid: SharedString| {
-            let Some(app) = weak.upgrade() else { return };
-            let app_state = app.global::<AppState>();
-            let st = state.lock().unwrap();
-            let idx = app_state.get_selected_index();
-            let filtered = filtered_items(&st);
-            let Some(item) = filtered.get(idx as usize).map(|i| (*i).clone()) else {
-                return;
-            };
-            let files = st.scanned_files.clone();
-            drop(st);
-            match build_plan(&item, &files, &from_guid, &to_guid) {
-                Ok(manifest) => {
-                    let summary = plan_summary_for_ui(&manifest);
-                    *pending.lock().unwrap() = Some(PendingApply { manifest });
-                    app_state.set_plan_summary(summary);
-                    app_state.set_last_result(SharedString::new());
-                    app_state.set_plan_visible(true);
+        app_state.on_request_plan(
+            move |from_guid: SharedString, to_guid: SharedString, scope: i32| {
+                let Some(app) = weak.upgrade() else { return };
+                let app_state = app.global::<AppState>();
+                let st = state.lock().unwrap();
+                let idx = app_state.get_selected_index();
+                let filtered = filtered_items(&st);
+                let Some(item) = filtered.get(idx as usize).map(|i| (*i).clone()) else {
+                    return;
+                };
+                let files = st.scanned_files.clone();
+                drop(st);
+                let restrict = if scope == 1 {
+                    Some(item.aircraft.clone())
+                } else {
+                    None
+                };
+                match build_plan(&item, &files, &from_guid, &to_guid, restrict.as_deref()) {
+                    Ok(manifest) => {
+                        let summary = plan_summary_for_ui(&manifest);
+                        *pending.lock().unwrap() = Some(PendingApply { manifest });
+                        app_state.set_plan_summary(summary);
+                        app_state.set_last_result(SharedString::new());
+                        app_state.set_plan_visible(true);
+                    }
+                    Err(e) => {
+                        app_state
+                            .set_last_result(SharedString::from(format!("plan failed: {e:#}")));
+                        app_state.set_plan_visible(true);
+                    }
                 }
-                Err(e) => {
-                    app_state.set_last_result(SharedString::from(format!("plan failed: {e:#}")));
-                    app_state.set_plan_visible(true);
-                }
-            }
-        });
+            },
+        );
     }
 
     // confirm-apply
@@ -569,6 +594,91 @@ fn item_to_row(item: &Item) -> ConflictRow {
     }
 }
 
+/// Other devices configured in the same `install / aircraft / subtype` as
+/// the selected item. Used by the aircraft-context strip.
+fn build_aircraft_context(data: &AppData, item: &Item) -> Vec<AircraftDevice> {
+    use std::collections::HashSet;
+
+    // Live device-name set (case-sensitive product names).
+    let live_names: HashSet<String> = data
+        .live_devices
+        .iter()
+        .map(|d| d.product_name.clone())
+        .collect();
+
+    // Names that have conflicts (same device, multiple GUIDs) — gleaned from the
+    // full items list, not just visible filtered items.
+    let conflicting_names: HashSet<String> = data
+        .items
+        .iter()
+        .filter(|i| {
+            i.install_root == item.install_root
+                && i.aircraft == item.aircraft
+                && i.subtype == item.subtype
+                && i.orphan_target_guid.is_none()
+                && i.candidates.len() >= 2
+        })
+        .map(|i| i.device_name.clone())
+        .collect();
+
+    let mut by_name: std::collections::BTreeMap<String, AircraftDevice> =
+        std::collections::BTreeMap::new();
+
+    for f in &data.scanned_files {
+        if f.install_root != item.install_root
+            || f.aircraft != item.aircraft
+            || f.subtype != Some(item.subtype)
+        {
+            continue;
+        }
+        if let scanner::FileStatus::Active { device_name, guid } = &f.status {
+            if device_name == &item.device_name {
+                continue; // skip the device the user is currently looking at
+            }
+            // Prefer LIVE candidates when a device has multiple GUID candidates.
+            let is_live = live_names.contains(device_name);
+            let has_conflict = conflicting_names.contains(device_name);
+            let entry = AircraftDevice {
+                device_name: SharedString::from(device_name.clone()),
+                guid: SharedString::from(guid.clone()),
+                is_live,
+                has_conflict,
+            };
+            by_name
+                .entry(device_name.clone())
+                .and_modify(|d| {
+                    if is_live {
+                        *d = entry.clone();
+                    }
+                })
+                .or_insert(entry);
+        }
+    }
+
+    by_name.into_values().collect()
+}
+
+/// How many aircraft folders the planner would touch for this item if
+/// "all aircraft" scope is selected.
+fn count_affected_aircraft(data: &AppData, item: &Item) -> i32 {
+    use std::collections::HashSet;
+    let aircrafts: HashSet<&str> = data
+        .scanned_files
+        .iter()
+        .filter(|f| {
+            f.install_root == item.install_root
+                && f.subtype == Some(item.subtype)
+                && matches!(
+                    &f.status,
+                    scanner::FileStatus::Active { device_name, .. }
+                        if device_name == &item.device_name
+                )
+        })
+        .map(|f| f.aircraft.as_str())
+        .collect();
+    aircrafts.len() as i32
+}
+
 fn compute_diffs(item: &Item) -> (Vec<DiffSegment>, Vec<SbsRow>) {
     let (a_bytes, b_bytes) = match item.candidates.as_slice() {
         [] => (Vec::new(), Vec::new()),
@@ -720,6 +830,7 @@ fn build_plan(
     files: &[ScannedFile],
     from_guid_str: &str,
     to_guid_str: &str,
+    restrict_to_aircraft: Option<&str>,
 ) -> Result<Manifest> {
     let from_guid = Guid::parse_dcs(from_guid_str)
         .with_context(|| format!("invalid from-guid {from_guid_str}"))?;
@@ -729,7 +840,7 @@ fn build_plan(
         .ok_or_else(|| anyhow::anyhow!("could not resolve %APPDATA%/DCSBinder"))?
         .join("backups");
     std::fs::create_dir_all(&backup_root)?;
-    Ok(remap::plan(
+    Ok(remap::plan_with_scope(
         &item.install_root,
         &item.device_name,
         item.subtype,
@@ -737,6 +848,7 @@ fn build_plan(
         &to_guid,
         files,
         &backup_root,
+        restrict_to_aircraft,
     )?)
 }
 

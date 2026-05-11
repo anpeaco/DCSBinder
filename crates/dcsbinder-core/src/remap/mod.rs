@@ -18,6 +18,6 @@ pub mod recover;
 pub mod types;
 
 pub use execute::{execute, ExecuteError};
-pub use plan::{plan, PlanError};
+pub use plan::{plan, plan_with_scope, PlanError};
 pub use recover::{recover, undo, IncompleteOperation, RecoverError, UndoError};
 pub use types::{BackupEntry, Manifest, Mutation, OperationKind, MANIFEST_VERSION};

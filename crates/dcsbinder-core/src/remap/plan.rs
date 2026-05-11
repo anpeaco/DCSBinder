@@ -59,6 +59,32 @@ pub fn plan(
     files: &[ScannedFile],
     backup_root: &Path,
 ) -> Result<Manifest, PlanError> {
+    plan_with_scope(
+        install_root,
+        device_name,
+        subtype,
+        source_guid,
+        target_guid,
+        files,
+        backup_root,
+        None,
+    )
+}
+
+/// Like [`plan`] but restricts the operation to a single aircraft folder.
+/// Pass `Some(aircraft_name)` to remap that one aircraft only, or `None` to
+/// remap every aircraft that has the source file (the default).
+#[allow(clippy::too_many_arguments)]
+pub fn plan_with_scope(
+    install_root: &Path,
+    device_name: &str,
+    subtype: Subtype,
+    source_guid: &Guid,
+    target_guid: &Guid,
+    files: &[ScannedFile],
+    backup_root: &Path,
+    restrict_to_aircraft: Option<&str>,
+) -> Result<Manifest, PlanError> {
     if source_guid == target_guid {
         return Err(PlanError::SourceEqualsTarget {
             source_guid: source_guid.to_dcs_string(),
@@ -83,9 +109,15 @@ pub fn plan(
         )
         .collect();
 
-    // Group by aircraft.
-    let aircrafts: std::collections::BTreeSet<&str> =
-        candidates.iter().map(|f| f.aircraft.as_str()).collect();
+    // Group by aircraft (optionally filtered to a single aircraft).
+    let aircrafts: std::collections::BTreeSet<&str> = candidates
+        .iter()
+        .map(|f| f.aircraft.as_str())
+        .filter(|a| match restrict_to_aircraft {
+            Some(r) => r == *a,
+            None => true,
+        })
+        .collect();
 
     let mut had_any_source = false;
 

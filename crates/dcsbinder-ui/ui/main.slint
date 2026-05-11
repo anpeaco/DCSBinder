@@ -53,6 +53,13 @@ struct SbsRow {
     header-text: string,
 }
 
+struct AircraftDevice {
+    device-name: string,
+    guid: string,
+    is-live: bool,
+    has-conflict: bool,
+}
+
 struct PlanSummary {
     device-name: string,
     from-guid: string,
@@ -168,9 +175,17 @@ export global AppState {
     in-out property <string> filter-text;
     in-out property <bool> show-context: true;
 
+    // Apply-scope: 0 = remap across all aircraft, 1 = remap selected aircraft only.
+    in-out property <int> apply-scope: 0;
+    // Number of aircraft the current selection would touch in "all aircraft" mode.
+    in property <int> affected-aircraft-count: 0;
+    // Other Active devices in the same aircraft+subtype as the selection.
+    in property <[AircraftDevice]> aircraft-devices;
+
     callback rescan();
     callback select-conflict(int);
-    callback request-plan(string, string);
+    // (from-guid, to-guid, scope) — scope: 0 = all aircraft, 1 = single aircraft.
+    callback request-plan(string, string, int);
     callback confirm-apply();
     callback cancel-apply();
     callback undo-last();
@@ -893,6 +908,15 @@ component DetailHeader inherits Rectangle {
             }
         }
         Rectangle { horizontal-stretch: 1; }
+        // Apply-scope cycle button.
+        if AppState.selected-index >= 0: Button {
+            text: AppState.apply-scope == 0
+                ? "Apply: all aircraft (\{AppState.affected-aircraft-count})"
+                : "Apply: this aircraft only";
+            clicked => {
+                AppState.apply-scope = (AppState.apply-scope + 1).mod(2);
+            }
+        }
         if AppState.selected-index >= 0 && !AppState.conflicts[AppState.selected-index].is-orphan: Button {
             text: "Use A (" + (AppState.conflicts[AppState.selected-index].candidate-a-live ? "live" : "stale") + ")";
             enabled: !AppState.dcs-running && !AppState.applying;
@@ -901,7 +925,8 @@ component DetailHeader inherits Rectangle {
                     AppState.conflicts[AppState.selected-index].candidate-a-guid,
                     AppState.conflicts[AppState.selected-index].candidate-b-live
                         ? AppState.conflicts[AppState.selected-index].candidate-b-guid
-                        : AppState.conflicts[AppState.selected-index].candidate-a-guid
+                        : AppState.conflicts[AppState.selected-index].candidate-a-guid,
+                    AppState.apply-scope
                 );
             }
         }
@@ -913,7 +938,8 @@ component DetailHeader inherits Rectangle {
                     AppState.conflicts[AppState.selected-index].candidate-b-guid,
                     AppState.conflicts[AppState.selected-index].candidate-a-live
                         ? AppState.conflicts[AppState.selected-index].candidate-a-guid
-                        : AppState.conflicts[AppState.selected-index].candidate-b-guid
+                        : AppState.conflicts[AppState.selected-index].candidate-b-guid,
+                    AppState.apply-scope
                 );
             }
         }
@@ -924,8 +950,71 @@ component DetailHeader inherits Rectangle {
             clicked => {
                 AppState.request-plan(
                     AppState.conflicts[AppState.selected-index].candidate-a-guid,
-                    AppState.conflicts[AppState.selected-index].orphan-target-guid
+                    AppState.conflicts[AppState.selected-index].orphan-target-guid,
+                    AppState.apply-scope
                 );
+            }
+        }
+    }
+}
+
+// Strip under the detail header listing every other Active device in the
+// selected aircraft+subtype. Helps the user see what else is configured for
+// that aircraft alongside the device they're remapping.
+component AircraftContextStrip inherits Rectangle {
+    height: AppState.aircraft-devices.length > 0 ? 36px : 0px;
+    visible: AppState.aircraft-devices.length > 0;
+    background: GhTheme.t.bg;
+    Rectangle {
+        x: 0; y: parent.height - 1px;
+        width: parent.width; height: 1px;
+        background: GhTheme.t.border;
+    }
+    HorizontalBox {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        Text {
+            text: "Also configured here:";
+            font-size: 11px;
+            color: GhTheme.t.text-muted;
+            vertical-alignment: center;
+        }
+        Flickable {
+            horizontal-stretch: 1;
+            viewport-width: ctx-row.preferred-width;
+            ctx-row := HorizontalBox {
+                padding: 0;
+                spacing: 4px;
+                for d[i] in AppState.aircraft-devices: Rectangle {
+                    height: 22px;
+                    border-radius: 11px;
+                    border-width: 1px;
+                    border-color: d.has-conflict
+                        ? GhTheme.t.warning
+                        : (d.is-live ? GhTheme.t.diff-add-symbol : GhTheme.t.border);
+                    background: d.has-conflict
+                        ? GhTheme.t.warning-soft
+                        : (d.is-live ? GhTheme.t.diff-add-bg : GhTheme.t.surface);
+                    HorizontalBox {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 4px;
+                        Text {
+                            text: d.device-name;
+                            font-size: 11px;
+                            color: GhTheme.t.text;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: d.is-live ? "live" : "stale";
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: d.is-live ? GhTheme.t.diff-add-symbol : GhTheme.t.text-muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1059,6 +1148,7 @@ export component App inherits Window {
                 padding: 0;
                 spacing: 0;
                 DetailHeader {}
+                AircraftContextStrip {}
                 DiffPane {
                     vertical-stretch: 1;
                 }
