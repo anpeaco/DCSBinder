@@ -1,12 +1,18 @@
-// DCSBinder UI — M4 v1.
+// DCSBinder UI — GitHub-Light theme.
 //
-// Single window, three panels:
-//  - Top: status bar (install paths, scan summary, rescan).
-//  - Left: list of actionable items (conflicts + orphans).
-//  - Right: detail pane with side-by-side diff and Apply button.
+// Layout:
+//   - Top: status bar (scan summary, DCS-running banner, Rescan / Undo).
+//   - Installs panel: discovered DCS roots.
+//   - Left: filterable list of actionable items (conflicts + orphans).
+//   - Right: GitHub-style diff with two line-number gutters, hunk headers,
+//     and a combined scrollbar + change minimap on the far right.
+//
+// All colors come from GhTheme.t — change values there to retheme the whole UI.
 
 import { VerticalBox, HorizontalBox, GroupBox, Button, ListView, ScrollView, LineEdit,
          StandardListView, TextEdit, StandardButton, Palette } from "std-widgets.slint";
+
+// ---------------------------------------------------------------- structs ----
 
 struct InstallInfo {
     label: string,
@@ -19,24 +25,19 @@ struct ConflictRow {
     aircraft: string,
     device-name: string,
     subtype: string,
-    // Two candidates; if >2 the UI shows a hint.
     candidate-a-guid: string,
     candidate-a-live: bool,
     candidate-b-guid: string,
     candidate-b-live: bool,
     extra-candidates: int,
-    // For orphan rows: there's only one stale candidate and a live target GUID
-    // not represented by any file.
     is-orphan: bool,
     orphan-target-guid: string,
 }
 
 struct DiffSegment {
     text: string,
-    // 0 = context (unchanged), 1 = added (right only), 2 = removed (left only),
-    // 3 = hunk header (@@ -N,M +N,M @@).
+    // 0 = context, 1 = added, 2 = removed, 3 = hunk header.
     kind: int,
-    // 1-based line numbers in each source. -1 means "no number on this side".
     line-a: int,
     line-b: int,
 }
@@ -44,12 +45,10 @@ struct DiffSegment {
 struct SbsRow {
     left-text: string,
     right-text: string,
-    // 0 = context, 1 = changed, 2 = blank (padding row).
     left-kind: int,
     right-kind: int,
     line-a: int,
     line-b: int,
-    // 3 = hunk header — spans both columns when set.
     header-kind: int,
     header-text: string,
 }
@@ -64,6 +63,74 @@ struct PlanSummary {
     lines: [string],
 }
 
+// ---------------------------------------------------------------- theme ----
+
+export struct ThemeColors {
+    bg: color,
+    surface: color,
+    surface-2: color,
+    border: color,
+    border-muted: color,
+    text: color,
+    text-muted: color,
+    accent: color,
+    accent-soft: color,
+    on-accent: color,
+    diff-add-bg: color,
+    diff-add-bg-soft: color,
+    diff-add-gutter: color,
+    diff-add-symbol: color,
+    diff-del-bg: color,
+    diff-del-bg-soft: color,
+    diff-del-gutter: color,
+    diff-del-symbol: color,
+    diff-hunk-bg: color,
+    diff-hunk-text: color,
+    diff-line-num: color,
+    diff-code: color,
+    success: color,
+    warning: color,
+    warning-soft: color,
+    danger: color,
+    danger-soft: color,
+    danger-text: color,
+}
+
+export global GhTheme {
+    out property <ThemeColors> t: {
+        bg: #ffffff,
+        surface: #f6f8fa,
+        surface-2: #eaeef2,
+        border: #d0d7de,
+        border-muted: #d8dee4,
+        text: #1f2328,
+        text-muted: #57606a,
+        accent: #0969da,
+        accent-soft: #ddf4ff,
+        on-accent: #ffffff,
+        diff-add-bg: #dafbe1,
+        diff-add-bg-soft: #e6ffec,
+        diff-add-gutter: #ccffd8,
+        diff-add-symbol: #1a7f37,
+        diff-del-bg: #ffebe9,
+        diff-del-bg-soft: #ffeef0,
+        diff-del-gutter: #ffdce0,
+        diff-del-symbol: #cf222e,
+        diff-hunk-bg: #ddf4ff,
+        diff-hunk-text: #57606a,
+        diff-line-num: #57606a,
+        diff-code: #1f2328,
+        success: #1a7f37,
+        warning: #9a6700,
+        warning-soft: #fff8c5,
+        danger: #cf222e,
+        danger-soft: #ffebe9,
+        danger-text: #82071e,
+    };
+}
+
+// --------------------------------------------------------------- AppState ----
+
 export global AppState {
     in property <[InstallInfo]> installs;
     in property <[ConflictRow]> conflicts;
@@ -77,7 +144,6 @@ export global AppState {
     in property <string> selected-target-content;
     in property <[DiffSegment]> diff-segments;
     in property <[SbsRow]> sbs-rows;
-    // 0 = inline (unified), 1 = side-by-side.
     in-out property <int> diff-mode: 0;
 
     in property <bool> plan-visible: false;
@@ -85,26 +151,17 @@ export global AppState {
     in property <bool> applying: false;
     in property <string> last-result;
 
-    // Two-way scroll state for the diff pane (so the minimap can drive scroll
-    // and show a viewport thumb).
     in-out property <length> inline-viewport-y: 0;
     in-out property <length> sbs-viewport-y: 0;
-    // Heights of the actual content (pixel-accurate; we know each row is 18px).
     in property <length> inline-content-height: 18px * AppState.diff-segments.length;
     in property <length> sbs-content-height: 18px * AppState.sbs-rows.length;
-    // The currently-visible diff viewport pixel height. Each ScrollView
-    // assigns its own visible-height into this so the minimap can size its thumb.
     in-out property <length> diff-visible-height: 0;
 
-    // Conflicts filter (case-insensitive substring across aircraft + device-name).
     in-out property <string> filter-text;
-
-    // Diff view: when false, context rows (kind == 0) are hidden.
     in-out property <bool> show-context: true;
 
     callback rescan();
     callback select-conflict(int);
-    // (from_guid, to_guid) — Rust resolves the rest from the selected conflict.
     callback request-plan(string, string);
     callback confirm-apply();
     callback cancel-apply();
@@ -112,9 +169,17 @@ export global AppState {
     callback filter-changed(string);
 }
 
+// ---------------------------------------------------------- StatusBar ----
+
 component StatusBar inherits Rectangle {
-    background: Palette.alternate-background;
+    background: GhTheme.t.surface;
     height: 56px;
+    Rectangle {
+        // Bottom border.
+        x: 0; y: parent.height - 1px;
+        width: parent.width; height: 1px;
+        background: GhTheme.t.border;
+    }
     HorizontalBox {
         spacing: 12px;
         VerticalBox {
@@ -124,18 +189,20 @@ component StatusBar inherits Rectangle {
                 text: "DCSBinder";
                 font-size: 16px;
                 font-weight: 700;
+                color: GhTheme.t.text;
             }
             Text {
                 text: AppState.status-text;
                 font-size: 11px;
-                color: Palette.foreground.with-alpha(0.7);
+                color: GhTheme.t.text-muted;
             }
         }
-        // Stretch.
         Rectangle { horizontal-stretch: 1; }
         if AppState.dcs-running: Rectangle {
-            background: #6e1010;
-            border-radius: 4px;
+            background: GhTheme.t.danger-soft;
+            border-color: GhTheme.t.danger;
+            border-width: 1px;
+            border-radius: 6px;
             HorizontalBox {
                 padding-left: 8px;
                 padding-right: 10px;
@@ -144,23 +211,25 @@ component StatusBar inherits Rectangle {
                     source: @image-url("icons/circle-alert.svg");
                     width: 16px;
                     height: 16px;
-                    colorize: #ffffff;
+                    colorize: GhTheme.t.danger;
                 }
                 Text {
                     text: "DCS.exe is running (PID " + AppState.dcs-running-pid + ") — remap disabled";
-                    color: white;
+                    color: GhTheme.t.danger-text;
                     vertical-alignment: center;
                 }
             }
         }
         Button {
             icon: @image-url("icons/refresh-cw.svg");
+            colorize-icon: true;
             text: AppState.scanning ? "Scanning..." : "Rescan";
             enabled: !AppState.scanning && !AppState.applying;
             clicked => { AppState.rescan(); }
         }
         Button {
             icon: @image-url("icons/undo-2.svg");
+            colorize-icon: true;
             text: "Undo last";
             enabled: !AppState.applying;
             clicked => { AppState.undo-last(); }
@@ -168,11 +237,16 @@ component StatusBar inherits Rectangle {
     }
 }
 
+// -------------------------------------------------- InstallsPanel ----
+
 component InstallsPanel inherits Rectangle {
     height: 32px + installs-vbox.preferred-height;
-    background: Palette.background;
-    border-color: Palette.border;
-    border-width: 1px;
+    background: GhTheme.t.bg;
+    Rectangle {
+        x: 0; y: parent.height - 1px;
+        width: parent.width; height: 1px;
+        background: GhTheme.t.border;
+    }
     installs-vbox := VerticalBox {
         padding: 8px;
         spacing: 4px;
@@ -184,70 +258,94 @@ component InstallsPanel inherits Rectangle {
                 font-weight: 700;
                 width: 130px;
                 vertical-alignment: center;
+                color: GhTheme.t.text;
             }
             Text {
                 text: inst.input-root;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+                color: GhTheme.t.text;
+                font-family: "Consolas";
+                font-size: 11px;
             }
             Text {
                 text: inst.aircraft-count + " aircraft · " + inst.device-count + " files";
-                color: Palette.foreground.with-alpha(0.7);
+                color: GhTheme.t.text-muted;
                 vertical-alignment: center;
             }
         }
         if AppState.installs.length == 0: Text {
             text: "No DCS installs discovered. Did you launch DCS at least once?";
-            color: Palette.foreground.with-alpha(0.7);
+            color: GhTheme.t.text-muted;
         }
     }
 }
 
+// ----------------------------------------------- ConflictsList ----
+
 component ConflictsList inherits Rectangle {
     width: 460px;
-    background: Palette.background;
-    border-color: Palette.border;
-    border-width: 1px;
+    background: GhTheme.t.bg;
+    Rectangle {
+        x: parent.width - 1px; y: 0;
+        width: 1px; height: parent.height;
+        background: GhTheme.t.border;
+    }
     VerticalBox {
         padding: 0;
         spacing: 0;
         Rectangle {
             height: 32px;
-            background: Palette.alternate-background;
+            background: GhTheme.t.surface;
+            Rectangle {
+                x: 0; y: parent.height - 1px;
+                width: parent.width; height: 1px;
+                background: GhTheme.t.border;
+            }
             HorizontalBox {
                 padding-left: 10px;
                 Text {
                     text: AppState.conflicts.length + " actionable item(s)";
                     vertical-alignment: center;
                     font-weight: 600;
+                    color: GhTheme.t.text;
                 }
             }
         }
         Rectangle {
-            height: 40px;
-            background: Palette.background;
+            height: 44px;
+            background: GhTheme.t.bg;
             HorizontalBox {
-                padding-left: 8px;
-                padding-right: 8px;
-                padding-top: 4px;
-                padding-bottom: 4px;
+                padding-left: 10px;
+                padding-right: 10px;
+                padding-top: 6px;
+                padding-bottom: 6px;
+                spacing: 6px;
+                Image {
+                    source: @image-url("icons/search.svg");
+                    width: 16px;
+                    height: 16px;
+                    colorize: GhTheme.t.text-muted;
+                    y: (parent.height - self.height) / 2;
+                }
                 LineEdit {
-                    placeholder-text: "Filter by aircraft or device name...";
+                    placeholder-text: "Filter by aircraft or device name…";
                     text <=> AppState.filter-text;
                     edited(text) => { AppState.filter-changed(text); }
                 }
             }
         }
         ScrollView {
+            vertical-scrollbar-policy: as-needed;
             VerticalBox {
                 padding: 6px;
                 spacing: 6px;
                 for c[i] in AppState.conflicts: Rectangle {
-                    background: AppState.selected-index == i ? #2a4060 : Palette.alternate-background;
-                    border-radius: 4px;
+                    background: AppState.selected-index == i ? GhTheme.t.accent-soft : GhTheme.t.bg;
+                    border-radius: 6px;
                     border-color: AppState.selected-index == i
-                        ? #6cb0ff
-                        : (c.is-orphan ? #b07e1a : Palette.border);
+                        ? GhTheme.t.accent
+                        : (c.is-orphan ? GhTheme.t.warning : GhTheme.t.border);
                     border-width: AppState.selected-index == i ? 2px : 1px;
                     TouchArea {
                         clicked => { AppState.select-conflict(i); }
@@ -257,53 +355,118 @@ component ConflictsList inherits Rectangle {
                             HorizontalBox {
                                 padding: 0;
                                 spacing: 6px;
-                                Text {
-                                    text: c.is-orphan ? "[ORPHAN] " : "[CONFLICT] ";
-                                    font-size: 10px;
-                                    font-weight: 700;
-                                    color: c.is-orphan ? #b07e1a : Palette.accent-foreground;
+                                Rectangle {
+                                    width: chip-text.preferred-width + 12px;
+                                    height: 18px;
+                                    background: c.is-orphan ? GhTheme.t.warning-soft : GhTheme.t.accent-soft;
+                                    border-radius: 9px;
+                                    chip-text := Text {
+                                        text: c.is-orphan ? "ORPHAN" : "CONFLICT";
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        color: c.is-orphan ? GhTheme.t.warning : GhTheme.t.accent;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
                                 }
                                 Text {
                                     text: c.aircraft + " / " + c.subtype;
                                     font-size: 11px;
-                                    color: Palette.foreground.with-alpha(0.7);
+                                    color: GhTheme.t.text-muted;
+                                    vertical-alignment: center;
                                 }
                             }
                             Text {
                                 text: c.device-name;
                                 font-weight: 700;
+                                color: GhTheme.t.text;
                             }
-                            Text {
-                                text: (c.candidate-a-live ? "[LIVE]  " : "[STALE] ") + c.candidate-a-guid;
-                                font-size: 10px;
-                                color: c.candidate-a-live ? #2a8c3a : Palette.foreground.with-alpha(0.7);
-                                font-family: "Consolas";
+                            HorizontalBox {
+                                padding: 0;
+                                spacing: 4px;
+                                Rectangle {
+                                    width: 46px;
+                                    height: 16px;
+                                    background: c.candidate-a-live ? GhTheme.t.diff-add-bg : GhTheme.t.surface-2;
+                                    border-radius: 3px;
+                                    Text {
+                                        text: c.candidate-a-live ? "LIVE" : "STALE";
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: c.candidate-a-live ? GhTheme.t.diff-add-symbol : GhTheme.t.text-muted;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: c.candidate-a-guid;
+                                    font-size: 10px;
+                                    font-family: "Consolas";
+                                    color: GhTheme.t.text;
+                                    vertical-alignment: center;
+                                }
                             }
-                            if !c.is-orphan: Text {
-                                text: (c.candidate-b-live ? "[LIVE]  " : "[STALE] ") + c.candidate-b-guid;
-                                font-size: 10px;
-                                color: c.candidate-b-live ? #2a8c3a : Palette.foreground.with-alpha(0.7);
-                                font-family: "Consolas";
+                            if !c.is-orphan: HorizontalBox {
+                                padding: 0;
+                                spacing: 4px;
+                                Rectangle {
+                                    width: 46px;
+                                    height: 16px;
+                                    background: c.candidate-b-live ? GhTheme.t.diff-add-bg : GhTheme.t.surface-2;
+                                    border-radius: 3px;
+                                    Text {
+                                        text: c.candidate-b-live ? "LIVE" : "STALE";
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: c.candidate-b-live ? GhTheme.t.diff-add-symbol : GhTheme.t.text-muted;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: c.candidate-b-guid;
+                                    font-size: 10px;
+                                    font-family: "Consolas";
+                                    color: GhTheme.t.text;
+                                    vertical-alignment: center;
+                                }
                             }
-                            if c.is-orphan: Text {
-                                text: "[LIVE]  " + c.orphan-target-guid + "  (no file yet)";
-                                font-size: 10px;
-                                color: #2a8c3a;
-                                font-family: "Consolas";
+                            if c.is-orphan: HorizontalBox {
+                                padding: 0;
+                                spacing: 4px;
+                                Rectangle {
+                                    width: 46px;
+                                    height: 16px;
+                                    background: GhTheme.t.diff-add-bg;
+                                    border-radius: 3px;
+                                    Text {
+                                        text: "LIVE";
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: GhTheme.t.diff-add-symbol;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: c.orphan-target-guid + "  (no file yet)";
+                                    font-size: 10px;
+                                    font-family: "Consolas";
+                                    color: GhTheme.t.text;
+                                    vertical-alignment: center;
+                                }
                             }
                             if c.extra-candidates > 0: Text {
                                 text: "+ " + c.extra-candidates + " other stale GUID(s)";
                                 font-size: 10px;
-                                color: Palette.foreground.with-alpha(0.6);
+                                color: GhTheme.t.text-muted;
                             }
                         }
                     }
                 }
                 if AppState.conflicts.length == 0: Text {
-                    text: AppState.scanning
-                        ? "Scanning..."
-                        : "No conflicts or orphans detected.";
-                    color: Palette.foreground.with-alpha(0.7);
+                    text: AppState.scanning ? "Scanning..." : "No conflicts or orphans detected.";
+                    color: GhTheme.t.text-muted;
                     horizontal-alignment: center;
                 }
             }
@@ -311,44 +474,46 @@ component ConflictsList inherits Rectangle {
     }
 }
 
-// Thin vertical "minimap" / change-bar shown beside the diff scroll area.
-// Each non-context line in the diff produces a colored mark proportional to
-// its position in the full diff. Click anywhere on the strip to jump-scroll.
-// A semi-transparent thumb shows the current viewport position.
+// ------------------------------------------------------- Minimap ----
+//
+// Combines change markers + scrollbar thumb into a single 18px-wide strip
+// on the far right of the diff pane. The default ScrollView scrollbars are
+// hidden so this strip is the only scroll affordance.
+
 component InlineMinimap inherits Rectangle {
-    width: 14px;
-    background: #15181c;
-    border-color: Palette.border;
-    border-width: 1px;
-    // Change markers.
-    for seg[i] in AppState.diff-segments: Rectangle {
-        x: 2px;
-        y: (i * 1.0 / max(AppState.diff-segments.length, 1)) * parent.height;
-        width: parent.width - 4px;
-        height: max(1.5px,
-            parent.height / max(AppState.diff-segments.length, 1));
-        background: seg.kind == 0 ? transparent
-                  : seg.kind == 1 ? #6cd07c
-                  :                 #ec7c7c;
-    }
-    // Viewport thumb.
+    width: 18px;
+    background: GhTheme.t.surface;
     Rectangle {
-        x: 0;
+        x: 0; y: 0;
+        width: 1px; height: parent.height;
+        background: GhTheme.t.border;
+    }
+    for seg[i] in AppState.diff-segments: Rectangle {
+        x: 3px;
+        y: (i * 1.0 / max(AppState.diff-segments.length, 1)) * parent.height;
+        width: parent.width - 6px;
+        height: max(1.5px, parent.height / max(AppState.diff-segments.length, 1));
+        background: seg.kind == 0 ? transparent
+                  : seg.kind == 1 ? GhTheme.t.diff-add-symbol
+                  : seg.kind == 2 ? GhTheme.t.diff-del-symbol
+                  :                 GhTheme.t.accent;
+    }
+    Rectangle {
+        x: 1px;
         y: AppState.inline-content-height > 0
             ? (-AppState.inline-viewport-y / AppState.inline-content-height) * parent.height
             : 0;
-        width: parent.width;
+        width: parent.width - 2px;
         height: AppState.inline-content-height > 0
-            ? max(8px, (AppState.diff-visible-height / AppState.inline-content-height) * parent.height)
+            ? max(20px, (AppState.diff-visible-height / AppState.inline-content-height) * parent.height)
             : 0;
-        background: #ffffff20;
-        border-color: #ffffff60;
+        background: #00000018;
+        border-color: #00000040;
         border-width: 1px;
+        border-radius: 3px;
     }
-    // Click-to-scroll.
     TouchArea {
         clicked => {
-            // Center the click position in the viewport.
             AppState.inline-viewport-y =
                 -((self.mouse-y / parent.height) * AppState.inline-content-height
                   - AppState.diff-visible-height / 2);
@@ -357,35 +522,38 @@ component InlineMinimap inherits Rectangle {
 }
 
 component SbsMinimap inherits Rectangle {
-    width: 14px;
-    background: #15181c;
-    border-color: Palette.border;
-    border-width: 1px;
+    width: 18px;
+    background: GhTheme.t.surface;
+    Rectangle {
+        x: 0; y: 0;
+        width: 1px; height: parent.height;
+        background: GhTheme.t.border;
+    }
     for row[i] in AppState.sbs-rows: Rectangle {
-        x: 2px;
+        x: 3px;
         y: (i * 1.0 / max(AppState.sbs-rows.length, 1)) * parent.height;
-        width: parent.width - 4px;
-        height: max(1.5px,
-            parent.height / max(AppState.sbs-rows.length, 1));
-        // Color: red if only left changed, green if only right, amber if both.
+        width: parent.width - 6px;
+        height: max(1.5px, parent.height / max(AppState.sbs-rows.length, 1));
         background:
-              (row.left-kind == 1 && row.right-kind == 1) ? #d0a04a
-            :  row.left-kind == 1                         ? #ec7c7c
-            :  row.right-kind == 1                        ? #6cd07c
-            :                                               transparent;
+              row.header-kind == 3                          ? GhTheme.t.accent
+            : (row.left-kind == 1 && row.right-kind == 1)   ? GhTheme.t.warning
+            :  row.left-kind == 1                           ? GhTheme.t.diff-del-symbol
+            :  row.right-kind == 1                          ? GhTheme.t.diff-add-symbol
+            :                                                 transparent;
     }
     Rectangle {
-        x: 0;
+        x: 1px;
         y: AppState.sbs-content-height > 0
             ? (-AppState.sbs-viewport-y / AppState.sbs-content-height) * parent.height
             : 0;
-        width: parent.width;
+        width: parent.width - 2px;
         height: AppState.sbs-content-height > 0
-            ? max(8px, (AppState.diff-visible-height / AppState.sbs-content-height) * parent.height)
+            ? max(20px, (AppState.diff-visible-height / AppState.sbs-content-height) * parent.height)
             : 0;
-        background: #ffffff20;
-        border-color: #ffffff60;
+        background: #00000018;
+        border-color: #00000040;
         border-width: 1px;
+        border-radius: 3px;
     }
     TouchArea {
         clicked => {
@@ -396,151 +564,121 @@ component SbsMinimap inherits Rectangle {
     }
 }
 
-// GitHub-Dark inspired palette for the diff view.
-//   bg-add        — addition row background
-//   bg-del        — deletion row background
-//   bg-hunk       — hunk-header row background
-//   bg-gutter     — line-number gutter background
-//   bg-gutter-add — line-number gutter on an addition row
-//   bg-gutter-del — line-number gutter on a deletion row
-//   fg-add / fg-del — code text color on addition / deletion rows
-//   fg-gutter     — line-number text
-//   fg-hunk       — hunk-header text (blue)
-export struct DiffColors {
-    bg-add: color,
-    bg-del: color,
-    bg-hunk: color,
-    bg-gutter: color,
-    bg-gutter-add: color,
-    bg-gutter-del: color,
-    fg-add: color,
-    fg-del: color,
-    fg-gutter: color,
-    fg-hunk: color,
-}
-
-global DiffPalette {
-    out property <DiffColors> c: {
-        bg-add: #033a1622,
-        bg-del: #67060c22,
-        bg-hunk: #1c2a3a,
-        bg-gutter: #161b22,
-        bg-gutter-add: #0d4423,
-        bg-gutter-del: #4d141a,
-        fg-add: #aff5b4,
-        fg-del: #ffabb4,
-        fg-gutter: #6e7681,
-        fg-hunk: #6cb6ff,
-    };
-}
+// ---------------------------------------------------- DiffPane ----
 
 component DiffPane inherits Rectangle {
-    background: Palette.background;
-    border-color: Palette.border;
-    border-width: 1px;
+    background: GhTheme.t.bg;
     VerticalBox {
         padding: 0;
         spacing: 0;
         Rectangle {
-            height: 36px;
-            background: Palette.alternate-background;
+            height: 40px;
+            background: GhTheme.t.surface;
+            Rectangle {
+                x: 0; y: parent.height - 1px;
+                width: parent.width; height: 1px;
+                background: GhTheme.t.border;
+            }
             HorizontalBox {
                 padding-left: 10px;
                 padding-right: 8px;
-                spacing: 8px;
+                spacing: 6px;
                 Text {
                     text: "Diff";
                     vertical-alignment: center;
                     font-weight: 600;
+                    color: GhTheme.t.text;
                 }
                 Rectangle { horizontal-stretch: 1; }
-                // Mode toggles with icons.
                 Button {
                     icon: @image-url("icons/align-left.svg");
+                    colorize-icon: true;
                     text: "Inline";
                     primary: AppState.diff-mode == 0;
                     clicked => { AppState.diff-mode = 0; }
                 }
                 Button {
                     icon: @image-url("icons/columns-2.svg");
+                    colorize-icon: true;
                     text: "Split";
                     primary: AppState.diff-mode == 1;
                     clicked => { AppState.diff-mode = 1; }
                 }
                 Button {
                     icon: @image-url("icons/list-filter.svg");
-                    text: AppState.show-context ? "All" : "Changed";
+                    colorize-icon: true;
+                    text: AppState.show-context ? "All lines" : "Changed only";
                     primary: !AppState.show-context;
                     clicked => { AppState.show-context = !AppState.show-context; }
                 }
             }
         }
-        HorizontalLayout {
+        HorizontalBox {
             padding: 0;
             spacing: 0;
             Rectangle {
                 horizontal-stretch: 1;
-                background: Palette.background;
+                background: GhTheme.t.bg;
                 if AppState.diff-mode == 0: ScrollView {
                     x: 0; y: 0; width: parent.width; height: parent.height;
                     viewport-y <=> AppState.inline-viewport-y;
+                    vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: always-off;
                     changed visible-height => { AppState.diff-visible-height = self.visible-height; }
                     VerticalBox {
                         padding: 0;
                         spacing: 0;
                         if AppState.diff-segments.length == 0: Text {
                             text: "Select an item on the left to see its diff.";
-                            color: Palette.foreground.with-alpha(0.7);
+                            color: GhTheme.t.text-muted;
+                            horizontal-alignment: center;
                         }
                         for seg[i] in AppState.diff-segments: Rectangle {
                             height: (seg.kind == 0 && !AppState.show-context) ? 0px : 18px;
                             visible: seg.kind != 0 || AppState.show-context;
                             clip: true;
                             background:
-                                seg.kind == 3 ? DiffPalette.c.bg-hunk
-                              : seg.kind == 1 ? DiffPalette.c.bg-add
-                              : seg.kind == 2 ? DiffPalette.c.bg-del
-                              :                 transparent;
-                            HorizontalLayout {
+                                seg.kind == 3 ? GhTheme.t.diff-hunk-bg
+                              : seg.kind == 1 ? GhTheme.t.diff-add-bg
+                              : seg.kind == 2 ? GhTheme.t.diff-del-bg
+                              :                 GhTheme.t.bg;
+                            HorizontalBox {
                                 padding: 0;
                                 spacing: 0;
-                                // Left gutter — A line number.
                                 Rectangle {
-                                    width: 44px;
+                                    width: 48px;
                                     background:
-                                        seg.kind == 3 ? DiffPalette.c.bg-hunk
-                                      : seg.kind == 2 ? DiffPalette.c.bg-gutter-del
-                                      :                 DiffPalette.c.bg-gutter;
+                                        seg.kind == 3 ? GhTheme.t.diff-hunk-bg
+                                      : seg.kind == 2 ? GhTheme.t.diff-del-gutter
+                                      :                 GhTheme.t.surface;
                                     Text {
                                         x: 0;
-                                        width: parent.width - 6px;
+                                        width: parent.width - 8px;
                                         horizontal-alignment: right;
                                         text: seg.line-a > 0 ? "\{seg.line-a}" : "";
                                         font-family: "Consolas";
                                         font-size: 11px;
-                                        color: DiffPalette.c.fg-gutter;
+                                        color: GhTheme.t.diff-line-num;
                                         vertical-alignment: center;
                                     }
                                 }
-                                // Right gutter — B line number.
                                 Rectangle {
-                                    width: 44px;
+                                    width: 48px;
                                     background:
-                                        seg.kind == 3 ? DiffPalette.c.bg-hunk
-                                      : seg.kind == 1 ? DiffPalette.c.bg-gutter-add
-                                      :                 DiffPalette.c.bg-gutter;
+                                        seg.kind == 3 ? GhTheme.t.diff-hunk-bg
+                                      : seg.kind == 1 ? GhTheme.t.diff-add-gutter
+                                      :                 GhTheme.t.surface;
                                     Text {
                                         x: 0;
-                                        width: parent.width - 6px;
+                                        width: parent.width - 8px;
                                         horizontal-alignment: right;
                                         text: seg.line-b > 0 ? "\{seg.line-b}" : "";
                                         font-family: "Consolas";
                                         font-size: 11px;
-                                        color: DiffPalette.c.fg-gutter;
+                                        color: GhTheme.t.diff-line-num;
                                         vertical-alignment: center;
                                     }
                                 }
-                                // Code.
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     clip: true;
@@ -550,10 +688,10 @@ component DiffPane inherits Rectangle {
                                             : (seg.kind == 1 ? "+ " : seg.kind == 2 ? "- " : "  ") + seg.text;
                                         font-family: "Consolas";
                                         font-size: 11px;
-                                        color: seg.kind == 3 ? DiffPalette.c.fg-hunk
-                                            : seg.kind == 1 ? DiffPalette.c.fg-add
-                                            : seg.kind == 2 ? DiffPalette.c.fg-del
-                                            :                 Palette.foreground;
+                                        color: seg.kind == 3 ? GhTheme.t.diff-hunk-text
+                                            : seg.kind == 1 ? GhTheme.t.diff-add-symbol
+                                            : seg.kind == 2 ? GhTheme.t.diff-del-symbol
+                                            :                 GhTheme.t.diff-code;
                                         overflow: clip;
                                         wrap: no-wrap;
                                         vertical-alignment: center;
@@ -566,13 +704,16 @@ component DiffPane inherits Rectangle {
                 if AppState.diff-mode == 1: ScrollView {
                     x: 0; y: 0; width: parent.width; height: parent.height;
                     viewport-y <=> AppState.sbs-viewport-y;
+                    vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: always-off;
                     changed visible-height => { AppState.diff-visible-height = self.visible-height; }
                     VerticalBox {
                         padding: 0;
                         spacing: 0;
                         if AppState.sbs-rows.length == 0: Text {
                             text: "Select an item on the left to see its diff.";
-                            color: Palette.foreground.with-alpha(0.7);
+                            color: GhTheme.t.text-muted;
+                            horizontal-alignment: center;
                         }
                         for row[i] in AppState.sbs-rows: Rectangle {
                             height:
@@ -586,92 +727,88 @@ component DiffPane inherits Rectangle {
                                 || row.right-kind != 0
                                 || AppState.show-context;
                             clip: true;
-                            // Hunk header spans the row.
                             if row.header-kind == 3: Rectangle {
-                                background: DiffPalette.c.bg-hunk;
+                                background: GhTheme.t.diff-hunk-bg;
                                 Text {
                                     x: 6px;
                                     text: row.header-text;
                                     font-family: "Consolas";
                                     font-size: 11px;
-                                    color: DiffPalette.c.fg-hunk;
+                                    color: GhTheme.t.diff-hunk-text;
                                     vertical-alignment: center;
                                 }
                             }
-                            if row.header-kind == 0: HorizontalLayout {
+                            if row.header-kind == 0: HorizontalBox {
                                 padding: 0;
                                 spacing: 0;
-                                // Left gutter.
                                 Rectangle {
-                                    width: 40px;
+                                    width: 44px;
                                     background:
-                                        row.left-kind == 1 ? DiffPalette.c.bg-gutter-del
-                                      :                      DiffPalette.c.bg-gutter;
+                                        row.left-kind == 1 ? GhTheme.t.diff-del-gutter
+                                      :                      GhTheme.t.surface;
                                     Text {
                                         x: 0;
-                                        width: parent.width - 6px;
+                                        width: parent.width - 8px;
                                         horizontal-alignment: right;
                                         text: row.line-a > 0 ? "\{row.line-a}" : "";
                                         font-family: "Consolas";
                                         font-size: 11px;
-                                        color: DiffPalette.c.fg-gutter;
+                                        color: GhTheme.t.diff-line-num;
                                         vertical-alignment: center;
                                     }
                                 }
-                                // Left code.
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     clip: true;
                                     background:
-                                        row.left-kind == 2 ? Palette.alternate-background
-                                      : row.left-kind == 1 ? DiffPalette.c.bg-del
-                                      :                      transparent;
+                                        row.left-kind == 2 ? GhTheme.t.surface
+                                      : row.left-kind == 1 ? GhTheme.t.diff-del-bg
+                                      :                      GhTheme.t.bg;
                                     Text {
                                         x: 6px;
                                         text: row.left-text;
                                         font-family: "Consolas";
                                         font-size: 11px;
-                                        color: row.left-kind == 1 ? DiffPalette.c.fg-del
-                                                                  : Palette.foreground;
+                                        color: row.left-kind == 1
+                                            ? GhTheme.t.diff-del-symbol
+                                            : GhTheme.t.diff-code;
                                         overflow: clip;
                                         wrap: no-wrap;
                                         vertical-alignment: center;
                                     }
                                 }
-                                // Divider.
-                                Rectangle { width: 1px; background: Palette.border; }
-                                // Right gutter.
+                                Rectangle { width: 1px; background: GhTheme.t.border; }
                                 Rectangle {
-                                    width: 40px;
+                                    width: 44px;
                                     background:
-                                        row.right-kind == 1 ? DiffPalette.c.bg-gutter-add
-                                      :                       DiffPalette.c.bg-gutter;
+                                        row.right-kind == 1 ? GhTheme.t.diff-add-gutter
+                                      :                       GhTheme.t.surface;
                                     Text {
                                         x: 0;
-                                        width: parent.width - 6px;
+                                        width: parent.width - 8px;
                                         horizontal-alignment: right;
                                         text: row.line-b > 0 ? "\{row.line-b}" : "";
                                         font-family: "Consolas";
                                         font-size: 11px;
-                                        color: DiffPalette.c.fg-gutter;
+                                        color: GhTheme.t.diff-line-num;
                                         vertical-alignment: center;
                                     }
                                 }
-                                // Right code.
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     clip: true;
                                     background:
-                                        row.right-kind == 2 ? Palette.alternate-background
-                                      : row.right-kind == 1 ? DiffPalette.c.bg-add
-                                      :                       transparent;
+                                        row.right-kind == 2 ? GhTheme.t.surface
+                                      : row.right-kind == 1 ? GhTheme.t.diff-add-bg
+                                      :                       GhTheme.t.bg;
                                     Text {
                                         x: 6px;
                                         text: row.right-text;
                                         font-family: "Consolas";
                                         font-size: 11px;
-                                        color: row.right-kind == 1 ? DiffPalette.c.fg-add
-                                                                   : Palette.foreground;
+                                        color: row.right-kind == 1
+                                            ? GhTheme.t.diff-add-symbol
+                                            : GhTheme.t.diff-code;
                                         overflow: clip;
                                         wrap: no-wrap;
                                         vertical-alignment: center;
@@ -688,125 +825,44 @@ component DiffPane inherits Rectangle {
     }
 }
 
-component PlanDialog inherits Rectangle {
-    background: #000a;
-    HorizontalBox {
-        Rectangle {
-            horizontal-stretch: 1;
-        }
-        Rectangle {
-            background: Palette.background;
-            border-color: Palette.border;
-            border-width: 1px;
-            border-radius: 6px;
-            width: 720px;
-            max-height: 600px;
-            VerticalBox {
-                padding: 16px;
-                spacing: 10px;
-                Text {
-                    text: "Confirm remap";
-                    font-size: 16px;
-                    font-weight: 700;
-                }
-                Text {
-                    text: AppState.plan-summary.device-name + "  (" + AppState.plan-summary.aircraft-count + " aircraft, " + AppState.plan-summary.mutation-count + " mutations)";
-                    font-size: 12px;
-                    color: Palette.foreground.with-alpha(0.8);
-                }
-                Text {
-                    text: "From: " + AppState.plan-summary.from-guid;
-                    font-family: "Consolas";
-                    font-size: 11px;
-                }
-                Text {
-                    text: " To:  " + AppState.plan-summary.to-guid;
-                    font-family: "Consolas";
-                    font-size: 11px;
-                }
-                Text {
-                    text: "Backups will be written to:";
-                    font-size: 11px;
-                    color: Palette.foreground.with-alpha(0.7);
-                }
-                Text {
-                    text: AppState.plan-summary.backup-dir;
-                    font-family: "Consolas";
-                    font-size: 10px;
-                    color: Palette.foreground.with-alpha(0.8);
-                    wrap: word-wrap;
-                }
-                ScrollView {
-                    height: 240px;
-                    VerticalBox {
-                        spacing: 1px;
-                        for line[i] in AppState.plan-summary.lines: Text {
-                            text: line;
-                            font-family: "Consolas";
-                            font-size: 10px;
-                        }
-                    }
-                }
-                HorizontalBox {
-                    Rectangle { horizontal-stretch: 1; }
-                    Button {
-                        icon: @image-url("icons/x.svg");
-                        text: "Cancel";
-                        clicked => { AppState.cancel-apply(); }
-                    }
-                    Button {
-                        icon: @image-url("icons/check.svg");
-                        text: AppState.applying ? "Applying..." : "Confirm — apply remap";
-                        primary: true;
-                        enabled: !AppState.applying && !AppState.dcs-running;
-                        clicked => { AppState.confirm-apply(); }
-                    }
-                }
-                if AppState.last-result != "": Text {
-                    text: AppState.last-result;
-                    color: Palette.foreground.with-alpha(0.85);
-                    wrap: word-wrap;
-                }
-            }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-        }
-    }
-}
+// ------------------------------------------------- DetailHeader ----
 
 component DetailHeader inherits Rectangle {
-    height: 56px;
-    background: Palette.alternate-background;
+    height: 60px;
+    background: GhTheme.t.surface;
+    Rectangle {
+        x: 0; y: parent.height - 1px;
+        width: parent.width; height: 1px;
+        background: GhTheme.t.border;
+    }
     HorizontalBox {
-        padding-left: 10px;
+        padding-left: 12px;
         padding-right: 10px;
-        spacing: 8px;
+        spacing: 10px;
         VerticalBox {
             padding: 0;
             spacing: 2px;
             Text {
                 text: AppState.selected-index >= 0
                     ? AppState.conflicts[AppState.selected-index].device-name
-                    : "";
+                    : "Select an item on the left";
                 font-weight: 700;
                 font-size: 14px;
+                color: GhTheme.t.text;
             }
             Text {
                 text: AppState.selected-index >= 0
                     ? AppState.conflicts[AppState.selected-index].aircraft + " / " + AppState.conflicts[AppState.selected-index].subtype
                     : "";
                 font-size: 11px;
-                color: Palette.foreground.with-alpha(0.7);
+                color: GhTheme.t.text-muted;
             }
         }
         Rectangle { horizontal-stretch: 1; }
-        // Two-candidate case: pick which content stays, target is the live one (if any).
         if AppState.selected-index >= 0 && !AppState.conflicts[AppState.selected-index].is-orphan: Button {
             text: "Use A (" + (AppState.conflicts[AppState.selected-index].candidate-a-live ? "live" : "stale") + ")";
             enabled: !AppState.dcs-running && !AppState.applying;
             clicked => {
-                // Source = A; target = live one (B if B is live, else A's GUID -> falls back to A no-op which Rust rejects).
                 AppState.request-plan(
                     AppState.conflicts[AppState.selected-index].candidate-a-guid,
                     AppState.conflicts[AppState.selected-index].candidate-b-live
@@ -827,7 +883,6 @@ component DetailHeader inherits Rectangle {
                 );
             }
         }
-        // Orphan: only one source, target is the live GUID.
         if AppState.selected-index >= 0 && AppState.conflicts[AppState.selected-index].is-orphan: Button {
             text: "Remap to live";
             primary: true;
@@ -842,14 +897,120 @@ component DetailHeader inherits Rectangle {
     }
 }
 
+// ------------------------------------------------- PlanDialog ----
+
+component PlanDialog inherits Rectangle {
+    background: #00000060;
+    HorizontalBox {
+        Rectangle { horizontal-stretch: 1; }
+        Rectangle {
+            background: GhTheme.t.bg;
+            border-color: GhTheme.t.border;
+            border-width: 1px;
+            border-radius: 8px;
+            width: 760px;
+            max-height: 640px;
+            VerticalBox {
+                padding: 18px;
+                spacing: 10px;
+                Text {
+                    text: "Confirm remap";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: GhTheme.t.text;
+                }
+                Text {
+                    text: AppState.plan-summary.device-name + "  (" + AppState.plan-summary.aircraft-count + " aircraft, " + AppState.plan-summary.mutation-count + " mutations)";
+                    font-size: 12px;
+                    color: GhTheme.t.text-muted;
+                }
+                Text {
+                    text: "From: " + AppState.plan-summary.from-guid;
+                    font-family: "Consolas";
+                    font-size: 11px;
+                    color: GhTheme.t.text;
+                }
+                Text {
+                    text: " To:  " + AppState.plan-summary.to-guid;
+                    font-family: "Consolas";
+                    font-size: 11px;
+                    color: GhTheme.t.text;
+                }
+                Text {
+                    text: "Backups will be written to:";
+                    font-size: 11px;
+                    color: GhTheme.t.text-muted;
+                }
+                Text {
+                    text: AppState.plan-summary.backup-dir;
+                    font-family: "Consolas";
+                    font-size: 10px;
+                    color: GhTheme.t.text;
+                    wrap: word-wrap;
+                }
+                Rectangle {
+                    height: 260px;
+                    background: GhTheme.t.surface;
+                    border-color: GhTheme.t.border;
+                    border-width: 1px;
+                    border-radius: 6px;
+                    ScrollView {
+                        x: 1px; y: 1px;
+                        width: parent.width - 2px;
+                        height: parent.height - 2px;
+                        VerticalBox {
+                            padding: 6px;
+                            spacing: 1px;
+                            for line[i] in AppState.plan-summary.lines: Text {
+                                text: line;
+                                font-family: "Consolas";
+                                font-size: 10px;
+                                color: GhTheme.t.text;
+                            }
+                        }
+                    }
+                }
+                HorizontalBox {
+                    Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        icon: @image-url("icons/x.svg");
+                        colorize-icon: true;
+                        text: "Cancel";
+                        clicked => { AppState.cancel-apply(); }
+                    }
+                    Button {
+                        icon: @image-url("icons/check.svg");
+                        colorize-icon: true;
+                        text: AppState.applying ? "Applying..." : "Confirm — apply remap";
+                        primary: true;
+                        enabled: !AppState.applying && !AppState.dcs-running;
+                        clicked => { AppState.confirm-apply(); }
+                    }
+                }
+                if AppState.last-result != "": Text {
+                    text: AppState.last-result;
+                    color: GhTheme.t.text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}
+
+// ------------------------------------------------------- App ----
+
 export component App inherits Window {
     title: "DCSBinder";
     preferred-width: 1280px;
     preferred-height: 800px;
-    min-width: 800px;
-    min-height: 500px;
-    background: Palette.background;
-    icon: @image-url("");
+    min-width: 900px;
+    min-height: 540px;
+    background: GhTheme.t.bg;
+
+    init => {
+        Palette.color-scheme = ColorScheme.light;
+    }
 
     VerticalBox {
         padding: 0;
