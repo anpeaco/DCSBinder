@@ -17,3 +17,5 @@ can tint them at the call site.
 | `circle-alert.svg` | `circle-alert` | DCS-running warning |
 | `gamepad-2.svg` | `gamepad-2` | Live devices summary |
 | `plane.svg` | `plane` | Aircraft summary |
+| `layers.svg` | `layers` | Apply-scope = all aircraft |
+| `target.svg` | `target` | Apply-scope = this aircraft only |

@@ -910,6 +910,10 @@ component DetailHeader inherits Rectangle {
         Rectangle { horizontal-stretch: 1; }
         // Apply-scope cycle button.
         if AppState.selected-index >= 0: Button {
+            icon: AppState.apply-scope == 0
+                ? @image-url("icons/layers.svg")
+                : @image-url("icons/target.svg");
+            colorize-icon: true;
             text: AppState.apply-scope == 0
                 ? "Apply: all aircraft (\{AppState.affected-aircraft-count})"
                 : "Apply: this aircraft only";
