@@ -260,6 +260,47 @@ component ConflictsList inherits Rectangle {
     }
 }
 
+// Thin vertical "minimap" / change-bar shown beside the diff scroll area.
+// Each non-context line in the diff produces a colored mark proportional to
+// its position in the full diff, so the user can spot clusters of changes
+// without scrolling.
+component InlineMinimap inherits Rectangle {
+    width: 14px;
+    background: #15181c;
+    border-color: Palette.border;
+    border-width: 1px;
+    for seg[i] in AppState.diff-segments: Rectangle {
+        x: 2px;
+        y: (i * 1.0 / max(AppState.diff-segments.length, 1)) * parent.height;
+        width: parent.width - 4px;
+        height: max(1.5px,
+            parent.height / max(AppState.diff-segments.length, 1));
+        background: seg.kind == 0 ? transparent
+                  : seg.kind == 1 ? #6cd07c
+                  :                 #ec7c7c;
+    }
+}
+
+component SbsMinimap inherits Rectangle {
+    width: 14px;
+    background: #15181c;
+    border-color: Palette.border;
+    border-width: 1px;
+    for row[i] in AppState.sbs-rows: Rectangle {
+        x: 2px;
+        y: (i * 1.0 / max(AppState.sbs-rows.length, 1)) * parent.height;
+        width: parent.width - 4px;
+        height: max(1.5px,
+            parent.height / max(AppState.sbs-rows.length, 1));
+        // Color: red if only left changed, green if only right, amber if both.
+        background:
+              (row.left-kind == 1 && row.right-kind == 1) ? #d0a04a
+            :  row.left-kind == 1                         ? #ec7c7c
+            :  row.right-kind == 1                        ? #6cd07c
+            :                                               transparent;
+    }
+}
+
 component DiffPane inherits Rectangle {
     background: Palette.background;
     border-color: Palette.border;
@@ -291,7 +332,13 @@ component DiffPane inherits Rectangle {
                 }
             }
         }
-        if AppState.diff-mode == 0: ScrollView {
+        HorizontalLayout {
+            padding: 0;
+            spacing: 0;
+            Rectangle {
+                horizontal-stretch: 1;
+                if AppState.diff-mode == 0: ScrollView {
+                    x: 0; y: 0; width: parent.width; height: parent.height;
             VerticalBox {
                 padding: 0;
                 spacing: 0;
@@ -320,57 +367,62 @@ component DiffPane inherits Rectangle {
                 }
             }
         }
-        if AppState.diff-mode == 1: ScrollView {
-            VerticalBox {
-                padding: 0;
-                spacing: 0;
-                if AppState.sbs-rows.length == 0: Text {
-                    text: "Select an item on the left to see its content / diff.";
-                    color: Palette.foreground.with-alpha(0.7);
-                }
-                for row[i] in AppState.sbs-rows: HorizontalLayout {
-                    height: 18px;
-                    padding: 0;
-                    spacing: 0;
-                    // Left column.
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        clip: true;
-                        background: row.left-kind == 2 ? #1a1a1a
-                                  : row.left-kind == 1 ? #3a1f1f
-                                  :                      transparent;
-                        Text {
-                            x: 6px;
-                            text: row.left-text;
-                            font-family: "Consolas";
-                            font-size: 11px;
-                            color: row.left-kind == 1 ? #ec9c9c : Palette.foreground;
-                            overflow: clip;
-                            wrap: no-wrap;
-                            vertical-alignment: center;
+                if AppState.diff-mode == 1: ScrollView {
+                    x: 0; y: 0; width: parent.width; height: parent.height;
+                    VerticalBox {
+                        padding: 0;
+                        spacing: 0;
+                        if AppState.sbs-rows.length == 0: Text {
+                            text: "Select an item on the left to see its content / diff.";
+                            color: Palette.foreground.with-alpha(0.7);
                         }
-                    }
-                    Rectangle { width: 1px; background: Palette.border; }
-                    // Right column.
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        clip: true;
-                        background: row.right-kind == 2 ? #1a1a1a
-                                  : row.right-kind == 1 ? #1f3a1f
-                                  :                       transparent;
-                        Text {
-                            x: 6px;
-                            text: row.right-text;
-                            font-family: "Consolas";
-                            font-size: 11px;
-                            color: row.right-kind == 1 ? #9cd09c : Palette.foreground;
-                            overflow: clip;
-                            wrap: no-wrap;
-                            vertical-alignment: center;
+                        for row[i] in AppState.sbs-rows: HorizontalLayout {
+                            height: 18px;
+                            padding: 0;
+                            spacing: 0;
+                            // Left column.
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                clip: true;
+                                background: row.left-kind == 2 ? #1a1a1a
+                                          : row.left-kind == 1 ? #3a1f1f
+                                          :                      transparent;
+                                Text {
+                                    x: 6px;
+                                    text: row.left-text;
+                                    font-family: "Consolas";
+                                    font-size: 11px;
+                                    color: row.left-kind == 1 ? #ec9c9c : Palette.foreground;
+                                    overflow: clip;
+                                    wrap: no-wrap;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Rectangle { width: 1px; background: Palette.border; }
+                            // Right column.
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                clip: true;
+                                background: row.right-kind == 2 ? #1a1a1a
+                                          : row.right-kind == 1 ? #1f3a1f
+                                          :                       transparent;
+                                Text {
+                                    x: 6px;
+                                    text: row.right-text;
+                                    font-family: "Consolas";
+                                    font-size: 11px;
+                                    color: row.right-kind == 1 ? #9cd09c : Palette.foreground;
+                                    overflow: clip;
+                                    wrap: no-wrap;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
                     }
                 }
             }
+            if AppState.diff-mode == 0: InlineMinimap {}
+            if AppState.diff-mode == 1: SbsMinimap {}
         }
     }
 }
