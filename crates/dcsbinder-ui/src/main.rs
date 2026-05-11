@@ -174,6 +174,15 @@ fn wire_callbacks(
                 (Vec::new(), Vec::new())
             };
             drop(st);
+            // Pre-compute "rows that occupy non-zero space" counts so the
+            // minimap can scale correctly when show-context is off.
+            let inline_changed = segments.iter().filter(|s| s.kind != 0).count() as i32;
+            let sbs_changed = sbs
+                .iter()
+                .filter(|r| r.header_kind != 0 || r.left_kind != 0 || r.right_kind != 0)
+                .count() as i32;
+            app_state.set_inline_changed_count(inline_changed);
+            app_state.set_sbs_changed_count(sbs_changed);
             let m: Rc<VecModel<DiffSegment>> = Rc::new(VecModel::from(segments));
             app_state.set_diff_segments(ModelRc::from(m));
             let s: Rc<VecModel<SbsRow>> = Rc::new(VecModel::from(sbs));
