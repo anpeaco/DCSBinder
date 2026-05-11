@@ -1,0 +1,25 @@
+# Default: normalize text to LF in the repo, leave working tree to OS default on checkout.
+* text=auto eol=lf
+
+# Fixture corpus is ground truth — preserve bytes exactly as DCS writes them (LF).
+# `-text` disables any line-ending or other text conversion.
+crates/dcsbinder-core/tests/fixtures/** -text
+
+# Rust source: always LF.
+*.rs   text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.slint text eol=lf
+
+# Windows scripts: always CRLF.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary types (none today, but future-proof).
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.msi  binary

@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dcsbinder-core",
+    "crates/dcsbinder-cli",
+    "crates/dcsbinder-ui",
+]
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2021"
+rust-version = "1.78"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/anpeaco/DCSBinder"
+authors = ["anpeaco"]
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

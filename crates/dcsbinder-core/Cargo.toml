@@ -1,0 +1,27 @@
+[package]
+name = "dcsbinder-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Core library: parsing, scanning, conflict detection, remap engine, history."
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2"
+
+# Module-specific deps will be added as features land:
+# - parser:   full_moon, indexmap
+# - scanner:  walkdir, regex
+# - device:   sdl2 (bundled), once_cell
+# - conflict: similar
+# - remap:    tempfile, blake3, fs_extra
+# - history:  serde, serde_json, uuid, time
+# - config:   directories, sysinfo
+
+[dev-dependencies]
+pretty_assertions = "1"

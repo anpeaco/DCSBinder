@@ -1,0 +1,19 @@
+[package]
+name = "dcsbinder-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Headless CLI: scan, devices, remap, history, undo."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "dcsbinder"
+path = "src/main.rs"
+
+[dependencies]
+dcsbinder-core = { path = "../dcsbinder-core" }

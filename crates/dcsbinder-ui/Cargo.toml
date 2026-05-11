@@ -1,0 +1,28 @@
+[package]
+name = "dcsbinder-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Slint front-end for DCSBinder."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "dcsbinder-ui"
+path = "src/main.rs"
+
+[dependencies]
+dcsbinder-core = { path = "../dcsbinder-core" }
+
+# Slint integration lands in M4. Until then the UI crate is a placeholder so
+# the workspace scaffold compiles without pulling Slint's heavy build-script
+# chain. To enable early prototyping, uncomment:
+#
+# slint = "=1.8"
+#
+# [build-dependencies]
+# slint-build = "=1.8"
