@@ -33,16 +33,25 @@ struct ConflictRow {
 
 struct DiffSegment {
     text: string,
-    // 0 = context (unchanged), 1 = added (right only), 2 = removed (left only)
+    // 0 = context (unchanged), 1 = added (right only), 2 = removed (left only),
+    // 3 = hunk header (@@ -N,M +N,M @@).
     kind: int,
+    // 1-based line numbers in each source. -1 means "no number on this side".
+    line-a: int,
+    line-b: int,
 }
 
 struct SbsRow {
     left-text: string,
     right-text: string,
-    // 0 = context, 1 = changed, 2 = blank (no content on that side)
+    // 0 = context, 1 = changed, 2 = blank (padding row).
     left-kind: int,
     right-kind: int,
+    line-a: int,
+    line-b: int,
+    // 3 = hunk header — spans both columns when set.
+    header-kind: int,
+    header-text: string,
 }
 
 struct PlanSummary {
@@ -90,6 +99,9 @@ export global AppState {
     // Conflicts filter (case-insensitive substring across aircraft + device-name).
     in-out property <string> filter-text;
 
+    // Diff view: when false, context rows (kind == 0) are hidden.
+    in-out property <bool> show-context: true;
+
     callback rescan();
     callback select-conflict(int);
     // (from_guid, to_guid) — Rust resolves the rest from the selected conflict.
@@ -125,8 +137,15 @@ component StatusBar inherits Rectangle {
             background: #6e1010;
             border-radius: 4px;
             HorizontalBox {
-                padding-left: 10px;
+                padding-left: 8px;
                 padding-right: 10px;
+                spacing: 6px;
+                Image {
+                    source: @image-url("icons/circle-alert.svg");
+                    width: 16px;
+                    height: 16px;
+                    colorize: #ffffff;
+                }
                 Text {
                     text: "DCS.exe is running (PID " + AppState.dcs-running-pid + ") — remap disabled";
                     color: white;
@@ -135,11 +154,13 @@ component StatusBar inherits Rectangle {
             }
         }
         Button {
+            icon: @image-url("icons/refresh-cw.svg");
             text: AppState.scanning ? "Scanning..." : "Rescan";
             enabled: !AppState.scanning && !AppState.applying;
             clicked => { AppState.rescan(); }
         }
         Button {
+            icon: @image-url("icons/undo-2.svg");
             text: "Undo last";
             enabled: !AppState.applying;
             clicked => { AppState.undo-last(); }
@@ -375,6 +396,44 @@ component SbsMinimap inherits Rectangle {
     }
 }
 
+// GitHub-Dark inspired palette for the diff view.
+//   bg-add        — addition row background
+//   bg-del        — deletion row background
+//   bg-hunk       — hunk-header row background
+//   bg-gutter     — line-number gutter background
+//   bg-gutter-add — line-number gutter on an addition row
+//   bg-gutter-del — line-number gutter on a deletion row
+//   fg-add / fg-del — code text color on addition / deletion rows
+//   fg-gutter     — line-number text
+//   fg-hunk       — hunk-header text (blue)
+export struct DiffColors {
+    bg-add: color,
+    bg-del: color,
+    bg-hunk: color,
+    bg-gutter: color,
+    bg-gutter-add: color,
+    bg-gutter-del: color,
+    fg-add: color,
+    fg-del: color,
+    fg-gutter: color,
+    fg-hunk: color,
+}
+
+global DiffPalette {
+    out property <DiffColors> c: {
+        bg-add: #033a1622,
+        bg-del: #67060c22,
+        bg-hunk: #1c2a3a,
+        bg-gutter: #161b22,
+        bg-gutter-add: #0d4423,
+        bg-gutter-del: #4d141a,
+        fg-add: #aff5b4,
+        fg-del: #ffabb4,
+        fg-gutter: #6e7681,
+        fg-hunk: #6cb6ff,
+    };
+}
+
 component DiffPane inherits Rectangle {
     background: Palette.background;
     border-color: Palette.border;
@@ -383,26 +442,36 @@ component DiffPane inherits Rectangle {
         padding: 0;
         spacing: 0;
         Rectangle {
-            height: 32px;
+            height: 36px;
             background: Palette.alternate-background;
             HorizontalBox {
                 padding-left: 10px;
-                padding-right: 10px;
+                padding-right: 8px;
+                spacing: 8px;
                 Text {
                     text: "Diff";
                     vertical-alignment: center;
                     font-weight: 600;
                 }
                 Rectangle { horizontal-stretch: 1; }
+                // Mode toggles with icons.
                 Button {
+                    icon: @image-url("icons/align-left.svg");
                     text: "Inline";
                     primary: AppState.diff-mode == 0;
                     clicked => { AppState.diff-mode = 0; }
                 }
                 Button {
-                    text: "Side-by-side";
+                    icon: @image-url("icons/columns-2.svg");
+                    text: "Split";
                     primary: AppState.diff-mode == 1;
                     clicked => { AppState.diff-mode = 1; }
+                }
+                Button {
+                    icon: @image-url("icons/list-filter.svg");
+                    text: AppState.show-context ? "All" : "Changed";
+                    primary: !AppState.show-context;
+                    clicked => { AppState.show-context = !AppState.show-context; }
                 }
             }
         }
@@ -411,38 +480,89 @@ component DiffPane inherits Rectangle {
             spacing: 0;
             Rectangle {
                 horizontal-stretch: 1;
+                background: Palette.background;
                 if AppState.diff-mode == 0: ScrollView {
                     x: 0; y: 0; width: parent.width; height: parent.height;
                     viewport-y <=> AppState.inline-viewport-y;
                     changed visible-height => { AppState.diff-visible-height = self.visible-height; }
-            VerticalBox {
-                padding: 0;
-                spacing: 0;
-                if AppState.diff-segments.length == 0: Text {
-                    text: "Select an item on the left to see its content / diff.";
-                    color: Palette.foreground.with-alpha(0.7);
-                }
-                for seg[i] in AppState.diff-segments: Rectangle {
-                    height: 18px;
-                    clip: true;
-                    background: seg.kind == 1 ? #1f3a1f
-                              : seg.kind == 2 ? #3a1f1f
+                    VerticalBox {
+                        padding: 0;
+                        spacing: 0;
+                        if AppState.diff-segments.length == 0: Text {
+                            text: "Select an item on the left to see its diff.";
+                            color: Palette.foreground.with-alpha(0.7);
+                        }
+                        for seg[i] in AppState.diff-segments: Rectangle {
+                            height: (seg.kind == 0 && !AppState.show-context) ? 0px : 18px;
+                            visible: seg.kind != 0 || AppState.show-context;
+                            clip: true;
+                            background:
+                                seg.kind == 3 ? DiffPalette.c.bg-hunk
+                              : seg.kind == 1 ? DiffPalette.c.bg-add
+                              : seg.kind == 2 ? DiffPalette.c.bg-del
                               :                 transparent;
-                    Text {
-                        x: 6px;
-                        text: (seg.kind == 1 ? "+ " : seg.kind == 2 ? "- " : "  ") + seg.text;
-                        font-family: "Consolas";
-                        font-size: 11px;
-                        color: seg.kind == 1 ? #9cd09c
-                            : seg.kind == 2 ? #ec9c9c
-                            : Palette.foreground;
-                        overflow: clip;
-                        wrap: no-wrap;
-                        vertical-alignment: center;
+                            HorizontalLayout {
+                                padding: 0;
+                                spacing: 0;
+                                // Left gutter — A line number.
+                                Rectangle {
+                                    width: 44px;
+                                    background:
+                                        seg.kind == 3 ? DiffPalette.c.bg-hunk
+                                      : seg.kind == 2 ? DiffPalette.c.bg-gutter-del
+                                      :                 DiffPalette.c.bg-gutter;
+                                    Text {
+                                        x: 0;
+                                        width: parent.width - 6px;
+                                        horizontal-alignment: right;
+                                        text: seg.line-a > 0 ? "\{seg.line-a}" : "";
+                                        font-family: "Consolas";
+                                        font-size: 11px;
+                                        color: DiffPalette.c.fg-gutter;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                // Right gutter — B line number.
+                                Rectangle {
+                                    width: 44px;
+                                    background:
+                                        seg.kind == 3 ? DiffPalette.c.bg-hunk
+                                      : seg.kind == 1 ? DiffPalette.c.bg-gutter-add
+                                      :                 DiffPalette.c.bg-gutter;
+                                    Text {
+                                        x: 0;
+                                        width: parent.width - 6px;
+                                        horizontal-alignment: right;
+                                        text: seg.line-b > 0 ? "\{seg.line-b}" : "";
+                                        font-family: "Consolas";
+                                        font-size: 11px;
+                                        color: DiffPalette.c.fg-gutter;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                // Code.
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    clip: true;
+                                    Text {
+                                        x: 6px;
+                                        text: seg.kind == 3 ? seg.text
+                                            : (seg.kind == 1 ? "+ " : seg.kind == 2 ? "- " : "  ") + seg.text;
+                                        font-family: "Consolas";
+                                        font-size: 11px;
+                                        color: seg.kind == 3 ? DiffPalette.c.fg-hunk
+                                            : seg.kind == 1 ? DiffPalette.c.fg-add
+                                            : seg.kind == 2 ? DiffPalette.c.fg-del
+                                            :                 Palette.foreground;
+                                        overflow: clip;
+                                        wrap: no-wrap;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-            }
-        }
                 if AppState.diff-mode == 1: ScrollView {
                     x: 0; y: 0; width: parent.width; height: parent.height;
                     viewport-y <=> AppState.sbs-viewport-y;
@@ -451,48 +571,111 @@ component DiffPane inherits Rectangle {
                         padding: 0;
                         spacing: 0;
                         if AppState.sbs-rows.length == 0: Text {
-                            text: "Select an item on the left to see its content / diff.";
+                            text: "Select an item on the left to see its diff.";
                             color: Palette.foreground.with-alpha(0.7);
                         }
-                        for row[i] in AppState.sbs-rows: HorizontalLayout {
-                            height: 18px;
-                            padding: 0;
-                            spacing: 0;
-                            // Left column.
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                clip: true;
-                                background: row.left-kind == 2 ? #1a1a1a
-                                          : row.left-kind == 1 ? #3a1f1f
-                                          :                      transparent;
+                        for row[i] in AppState.sbs-rows: Rectangle {
+                            height:
+                                (row.header-kind == 0
+                                 && row.left-kind == 0
+                                 && row.right-kind == 0
+                                 && !AppState.show-context) ? 0px : 18px;
+                            visible:
+                                row.header-kind != 0
+                                || row.left-kind != 0
+                                || row.right-kind != 0
+                                || AppState.show-context;
+                            clip: true;
+                            // Hunk header spans the row.
+                            if row.header-kind == 3: Rectangle {
+                                background: DiffPalette.c.bg-hunk;
                                 Text {
                                     x: 6px;
-                                    text: row.left-text;
+                                    text: row.header-text;
                                     font-family: "Consolas";
                                     font-size: 11px;
-                                    color: row.left-kind == 1 ? #ec9c9c : Palette.foreground;
-                                    overflow: clip;
-                                    wrap: no-wrap;
+                                    color: DiffPalette.c.fg-hunk;
                                     vertical-alignment: center;
                                 }
                             }
-                            Rectangle { width: 1px; background: Palette.border; }
-                            // Right column.
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                clip: true;
-                                background: row.right-kind == 2 ? #1a1a1a
-                                          : row.right-kind == 1 ? #1f3a1f
-                                          :                       transparent;
-                                Text {
-                                    x: 6px;
-                                    text: row.right-text;
-                                    font-family: "Consolas";
-                                    font-size: 11px;
-                                    color: row.right-kind == 1 ? #9cd09c : Palette.foreground;
-                                    overflow: clip;
-                                    wrap: no-wrap;
-                                    vertical-alignment: center;
+                            if row.header-kind == 0: HorizontalLayout {
+                                padding: 0;
+                                spacing: 0;
+                                // Left gutter.
+                                Rectangle {
+                                    width: 40px;
+                                    background:
+                                        row.left-kind == 1 ? DiffPalette.c.bg-gutter-del
+                                      :                      DiffPalette.c.bg-gutter;
+                                    Text {
+                                        x: 0;
+                                        width: parent.width - 6px;
+                                        horizontal-alignment: right;
+                                        text: row.line-a > 0 ? "\{row.line-a}" : "";
+                                        font-family: "Consolas";
+                                        font-size: 11px;
+                                        color: DiffPalette.c.fg-gutter;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                // Left code.
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    clip: true;
+                                    background:
+                                        row.left-kind == 2 ? Palette.alternate-background
+                                      : row.left-kind == 1 ? DiffPalette.c.bg-del
+                                      :                      transparent;
+                                    Text {
+                                        x: 6px;
+                                        text: row.left-text;
+                                        font-family: "Consolas";
+                                        font-size: 11px;
+                                        color: row.left-kind == 1 ? DiffPalette.c.fg-del
+                                                                  : Palette.foreground;
+                                        overflow: clip;
+                                        wrap: no-wrap;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                // Divider.
+                                Rectangle { width: 1px; background: Palette.border; }
+                                // Right gutter.
+                                Rectangle {
+                                    width: 40px;
+                                    background:
+                                        row.right-kind == 1 ? DiffPalette.c.bg-gutter-add
+                                      :                       DiffPalette.c.bg-gutter;
+                                    Text {
+                                        x: 0;
+                                        width: parent.width - 6px;
+                                        horizontal-alignment: right;
+                                        text: row.line-b > 0 ? "\{row.line-b}" : "";
+                                        font-family: "Consolas";
+                                        font-size: 11px;
+                                        color: DiffPalette.c.fg-gutter;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                // Right code.
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    clip: true;
+                                    background:
+                                        row.right-kind == 2 ? Palette.alternate-background
+                                      : row.right-kind == 1 ? DiffPalette.c.bg-add
+                                      :                       transparent;
+                                    Text {
+                                        x: 6px;
+                                        text: row.right-text;
+                                        font-family: "Consolas";
+                                        font-size: 11px;
+                                        color: row.right-kind == 1 ? DiffPalette.c.fg-add
+                                                                   : Palette.foreground;
+                                        overflow: clip;
+                                        wrap: no-wrap;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
@@ -567,10 +750,12 @@ component PlanDialog inherits Rectangle {
                 HorizontalBox {
                     Rectangle { horizontal-stretch: 1; }
                     Button {
+                        icon: @image-url("icons/x.svg");
                         text: "Cancel";
                         clicked => { AppState.cancel-apply(); }
                     }
                     Button {
+                        icon: @image-url("icons/check.svg");
                         text: AppState.applying ? "Applying..." : "Confirm — apply remap";
                         primary: true;
                         enabled: !AppState.applying && !AppState.dcs-running;

@@ -560,22 +560,6 @@ fn item_to_row(item: &Item) -> ConflictRow {
     }
 }
 
-fn flush_pending(dels: &mut Vec<String>, ins: &mut Vec<String>, sbs: &mut Vec<SbsRow>) {
-    let max = dels.len().max(ins.len());
-    for i in 0..max {
-        let left = dels.get(i).cloned();
-        let right = ins.get(i).cloned();
-        sbs.push(SbsRow {
-            left_text: SharedString::from(left.clone().unwrap_or_default()),
-            right_text: SharedString::from(right.clone().unwrap_or_default()),
-            left_kind: if left.is_some() { 1 } else { 2 },
-            right_kind: if right.is_some() { 1 } else { 2 },
-        });
-    }
-    dels.clear();
-    ins.clear();
-}
-
 fn compute_diffs(item: &Item) -> (Vec<DiffSegment>, Vec<SbsRow>) {
     let (a_bytes, b_bytes) = match item.candidates.as_slice() {
         [] => (Vec::new(), Vec::new()),
@@ -591,47 +575,135 @@ fn compute_diffs(item: &Item) -> (Vec<DiffSegment>, Vec<SbsRow>) {
 
     let mut inline: Vec<DiffSegment> = Vec::new();
     let mut sbs: Vec<SbsRow> = Vec::new();
-    let mut pending_del: Vec<String> = Vec::new();
-    let mut pending_ins: Vec<String> = Vec::new();
 
-    for change in diff.iter_all_changes() {
-        let text = change
-            .to_string()
-            .trim_end_matches('\n')
-            .replace('\t', "    ");
-        match change.tag() {
-            ChangeTag::Equal => {
-                flush_pending(&mut pending_del, &mut pending_ins, &mut sbs);
+    let hunks = diff.grouped_ops(3);
+    for ops in &hunks {
+        let (a_start, a_end, b_start, b_end) = hunk_range(ops);
+        let header_text = format!(
+            "@@ -{},{} +{},{} @@",
+            a_start + 1,
+            a_end - a_start,
+            b_start + 1,
+            b_end - b_start
+        );
+        inline.push(DiffSegment {
+            text: SharedString::from(header_text.clone()),
+            kind: 3,
+            line_a: -1,
+            line_b: -1,
+        });
+        sbs.push(SbsRow {
+            left_text: SharedString::new(),
+            right_text: SharedString::new(),
+            left_kind: 0,
+            right_kind: 0,
+            line_a: -1,
+            line_b: -1,
+            header_kind: 3,
+            header_text: SharedString::from(header_text),
+        });
+
+        // Two passes per hunk: one for inline (sequential), one for SbS
+        // (delete/insert runs paired).
+        let mut pending_del: Vec<(usize, String)> = Vec::new();
+        let mut pending_ins: Vec<(usize, String)> = Vec::new();
+
+        for op in ops {
+            for change in diff.iter_changes(op) {
+                let raw = change
+                    .to_string()
+                    .trim_end_matches('\n')
+                    .replace('\t', "    ");
+                let la = change.old_index().map_or(-1, |i| i as i32 + 1);
+                let lb = change.new_index().map_or(-1, |i| i as i32 + 1);
+                let kind = match change.tag() {
+                    ChangeTag::Equal => 0,
+                    ChangeTag::Insert => 1,
+                    ChangeTag::Delete => 2,
+                };
                 inline.push(DiffSegment {
-                    text: SharedString::from(text.clone()),
-                    kind: 0,
+                    text: SharedString::from(raw.clone()),
+                    kind,
+                    line_a: la,
+                    line_b: lb,
                 });
-                sbs.push(SbsRow {
-                    left_text: SharedString::from(text.clone()),
-                    right_text: SharedString::from(text),
-                    left_kind: 0,
-                    right_kind: 0,
-                });
-            }
-            ChangeTag::Insert => {
-                inline.push(DiffSegment {
-                    text: SharedString::from(text.clone()),
-                    kind: 1,
-                });
-                pending_ins.push(text);
-            }
-            ChangeTag::Delete => {
-                inline.push(DiffSegment {
-                    text: SharedString::from(text.clone()),
-                    kind: 2,
-                });
-                pending_del.push(text);
+                match change.tag() {
+                    ChangeTag::Equal => {
+                        flush_pending_sbs(&mut pending_del, &mut pending_ins, &mut sbs);
+                        sbs.push(SbsRow {
+                            left_text: SharedString::from(raw.clone()),
+                            right_text: SharedString::from(raw),
+                            left_kind: 0,
+                            right_kind: 0,
+                            line_a: la,
+                            line_b: lb,
+                            header_kind: 0,
+                            header_text: SharedString::new(),
+                        });
+                    }
+                    ChangeTag::Delete => {
+                        pending_del.push((la as usize, raw));
+                    }
+                    ChangeTag::Insert => {
+                        pending_ins.push((lb as usize, raw));
+                    }
+                }
             }
         }
+        flush_pending_sbs(&mut pending_del, &mut pending_ins, &mut sbs);
     }
-    flush_pending(&mut pending_del, &mut pending_ins, &mut sbs);
 
     (inline, sbs)
+}
+
+fn hunk_range(ops: &[similar::DiffOp]) -> (usize, usize, usize, usize) {
+    let a_start = ops
+        .first()
+        .map(similar::DiffOp::old_range)
+        .map_or(0, |r| r.start);
+    let a_end = ops
+        .last()
+        .map(similar::DiffOp::old_range)
+        .map_or(0, |r| r.end);
+    let b_start = ops
+        .first()
+        .map(similar::DiffOp::new_range)
+        .map_or(0, |r| r.start);
+    let b_end = ops
+        .last()
+        .map(similar::DiffOp::new_range)
+        .map_or(0, |r| r.end);
+    (a_start, a_end, b_start, b_end)
+}
+
+fn flush_pending_sbs(
+    dels: &mut Vec<(usize, String)>,
+    ins: &mut Vec<(usize, String)>,
+    sbs: &mut Vec<SbsRow>,
+) {
+    let max = dels.len().max(ins.len());
+    for i in 0..max {
+        let (la, left) = dels
+            .get(i)
+            .map_or((-1_i32, String::new()), |(n, s)| (*n as i32, s.clone()));
+        let (lb, right) = ins
+            .get(i)
+            .map_or((-1_i32, String::new()), |(n, s)| (*n as i32, s.clone()));
+        let left_present = dels.get(i).is_some();
+        let right_present = ins.get(i).is_some();
+        sbs.push(SbsRow {
+            left_text: SharedString::from(left),
+            right_text: SharedString::from(right),
+            left_kind: if left_present { 1 } else { 2 },
+            right_kind: if right_present { 1 } else { 2 },
+            line_a: la,
+            line_b: lb,
+            header_kind: 0,
+            header_text: SharedString::new(),
+        });
+    }
+    dels.clear();
+    ins.clear();
 }
 
 fn build_plan(
