@@ -1,0 +1,57 @@
+M4: Slint UI - conflicts list, side-by-side diff, apply with preview, undo
+
+Closes milestone:m4. dcsbinder-ui.exe is a single-window app that
+auto-discovers DCS installs, scans + enumerates live controllers on a
+background thread, and lets the user resolve every conflict or orphan
+through a side-by-side diff view + mandatory plan-preview before apply.
+
+UI surfaces (ui/main.slint):
+- Top status bar: scan summary, DCS-running indicator (red banner
+  disables apply), Rescan and Undo-last buttons.
+- Installs panel: every discovered DCS root (DCS, openbeta, serverbeta)
+  with aircraft + active-file counts.
+- Left list: actionable items, color-coded:
+  CONFLICT rows = two-GUID groups (the M1 detection).
+  ORPHAN rows = single stale GUID with a live device of the same name
+    whose GUID is not represented by any file. (The LftPnl case.)
+  Each candidate is annotated LIVE (green) or STALE.
+- Right pane: side-by-side diff (line-level via the similar crate),
+  with header buttons Use A / Use B for conflicts and Remap-to-live
+  for orphans.
+- Plan dialog (modal overlay): shows the FULL plan - backup dir,
+  from/to GUIDs, aircraft+mutation counts, every mutation line.
+  Confirm/Cancel buttons. Apply runs core::remap::execute on a thread
+  and reports the .done path or error back via invoke_from_event_loop.
+
+Core (M3 reuse):
+- conflict::detect_orphans new function: finds single-candidate groups
+  whose GUID does not match a live device with the same product name.
+  Lets the UI surface bindings that need to be re-keyed to the live
+  GUID even when there is no two-GUID conflict.
+
+Rust glue (src/main.rs):
+- AppData state guarded by a Mutex; scan runs on std::thread::spawn,
+  results pushed via slint::invoke_from_event_loop.
+- Diff rendered as a Vec<DiffSegment{text,kind}>; the slint view colors
+  insert/delete/context.
+- Plan preview reuses core::remap::plan; execute is gated behind the
+  Confirm button. DCS-running check enabled (engine refuses if true).
+- Undo-last walks %APPDATA%/DCSBinder/backups/ for the most-recent
+  .done manifest and calls core::remap::undo.
+
+Stack:
+- slint = 1.13 pinned (CLAUDE.md rule).
+- backend-winit + renderer-skia for crisp rendering.
+- similar = 2 for line-level text diff.
+
+Tests: 24 workspace tests still green (no UI tests yet - the UI is
+thin glue over the core).
+
+Smoke-tested by building dcsbinder-ui.exe (~27 MB release). Visual
+verification deferred to user; the binary is at:
+target/release/dcsbinder-ui.exe
+
+CI gate green: fmt, clippy --workspace --all-targets -- -D warnings,
+test --workspace.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

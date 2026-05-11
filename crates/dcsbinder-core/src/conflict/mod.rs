@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::device::guid::Guid;
 use crate::scanner::{FileStatus, ScannedFile, Subtype};
 
 /// One detected conflict: two or more `Active` files in the same install /
@@ -26,6 +27,89 @@ pub struct Conflict {
 pub struct Candidate {
     pub guid: String,
     pub path: PathBuf,
+}
+
+/// A single-candidate device whose binding GUID does not match any live device,
+/// while a live device with the same name exists. The user almost certainly
+/// wants the binding remapped under the live GUID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Orphan {
+    pub install_root: PathBuf,
+    pub aircraft: String,
+    pub subtype: Subtype,
+    pub device_name: String,
+    pub stale_guid: String,
+    pub stale_path: PathBuf,
+    pub live_guid: String,
+}
+
+/// Find every `(install, aircraft, subtype, device_name)` group with exactly
+/// one Active file whose GUID is **not** the live device's instance GUID,
+/// but where a live device with the same product name exists.
+///
+/// `live_devices` is the `(product_name, instance_guid_dcs_string)` list from
+/// [`crate::device::enumerate`].
+#[must_use]
+pub fn detect_orphans(files: &[ScannedFile], live_devices: &[(String, Guid)]) -> Vec<Orphan> {
+    let mut groups: BTreeMap<GroupKey, Vec<Candidate>> = BTreeMap::new();
+    for file in files {
+        let FileStatus::Active { device_name, guid } = &file.status else {
+            continue;
+        };
+        let Some(subtype) = file.subtype else {
+            continue;
+        };
+        let key = GroupKey {
+            install_root: file.install_root.clone(),
+            aircraft: file.aircraft.clone(),
+            subtype,
+            device_name: device_name.clone(),
+        };
+        groups.entry(key).or_default().push(Candidate {
+            guid: guid.clone(),
+            path: file.path.clone(),
+        });
+    }
+
+    let mut orphans: Vec<Orphan> = Vec::new();
+    for (key, candidates) in groups {
+        if candidates.len() != 1 {
+            continue; // 0 = impossible here; >1 = a conflict, handled separately.
+        }
+        let cand = &candidates[0];
+        let cand_guid_canonical =
+            Guid::parse_dcs(&format!("{{{}}}", cand.guid)).map(Guid::to_dcs_string);
+        let Ok(cand_canonical) = cand_guid_canonical else {
+            continue;
+        };
+        // Is there a live device with this product name whose GUID doesn't
+        // equal the candidate's GUID?
+        if let Some((_, live_guid)) = live_devices
+            .iter()
+            .find(|(name, _)| name == &key.device_name)
+        {
+            let live_canonical = live_guid.to_dcs_string();
+            if live_canonical != cand_canonical {
+                orphans.push(Orphan {
+                    install_root: key.install_root,
+                    aircraft: key.aircraft,
+                    subtype: key.subtype,
+                    device_name: key.device_name,
+                    stale_guid: cand.guid.clone(),
+                    stale_path: cand.path.clone(),
+                    live_guid: live_canonical,
+                });
+            }
+        }
+    }
+    orphans.sort_by(|a, b| {
+        a.install_root
+            .cmp(&b.install_root)
+            .then_with(|| a.aircraft.cmp(&b.aircraft))
+            .then_with(|| a.subtype.as_str().cmp(b.subtype.as_str()))
+            .then_with(|| a.device_name.cmp(&b.device_name))
+    });
+    orphans
 }
 
 /// Find every device-name+GUID conflict in `files`. Output is sorted by

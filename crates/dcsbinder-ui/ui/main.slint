@@ -1,12 +1,491 @@
-// Placeholder Slint file. Real UI surfaces land in M4 — see docs/ARCHITECTURE.md
-// for the six-screen design (Dashboard / Devices / Conflicts / Diff / History / Settings).
+// DCSBinder UI — M4 v1.
+//
+// Single window, three panels:
+//  - Top: status bar (install paths, scan summary, rescan).
+//  - Left: list of actionable items (conflicts + orphans).
+//  - Right: detail pane with side-by-side diff and Apply button.
+
+import { VerticalBox, HorizontalBox, GroupBox, Button, ListView, ScrollView, LineEdit,
+         StandardListView, TextEdit, StandardButton, Palette } from "std-widgets.slint";
+
+struct InstallInfo {
+    label: string,
+    input-root: string,
+    aircraft-count: int,
+    device-count: int,
+}
+
+struct ConflictRow {
+    aircraft: string,
+    device-name: string,
+    subtype: string,
+    // Two candidates; if >2 the UI shows a hint.
+    candidate-a-guid: string,
+    candidate-a-live: bool,
+    candidate-b-guid: string,
+    candidate-b-live: bool,
+    extra-candidates: int,
+    // For orphan rows: there's only one stale candidate and a live target GUID
+    // not represented by any file.
+    is-orphan: bool,
+    orphan-target-guid: string,
+}
+
+struct DiffSegment {
+    text: string,
+    // 0 = context (unchanged), 1 = added (right only), 2 = removed (left only)
+    kind: int,
+}
+
+struct PlanSummary {
+    device-name: string,
+    from-guid: string,
+    to-guid: string,
+    aircraft-count: int,
+    mutation-count: int,
+    backup-dir: string,
+    lines: [string],
+}
+
+export global AppState {
+    in property <[InstallInfo]> installs;
+    in property <[ConflictRow]> conflicts;
+    in property <string> status-text;
+    in property <bool> scanning;
+    in property <bool> dcs-running;
+    in property <int> dcs-running-pid;
+
+    in property <int> selected-index: -1;
+    in property <string> selected-source-content;
+    in property <string> selected-target-content;
+    in property <[DiffSegment]> diff-segments;
+
+    in property <bool> plan-visible: false;
+    in property <PlanSummary> plan-summary;
+    in property <bool> applying: false;
+    in property <string> last-result;
+
+    callback rescan();
+    callback select-conflict(int);
+    // (from_guid, to_guid) — Rust resolves the rest from the selected conflict.
+    callback request-plan(string, string);
+    callback confirm-apply();
+    callback cancel-apply();
+    callback undo-last();
+}
+
+component StatusBar inherits Rectangle {
+    background: Palette.alternate-background;
+    height: 56px;
+    HorizontalBox {
+        spacing: 12px;
+        VerticalBox {
+            padding: 0;
+            spacing: 2px;
+            Text {
+                text: "DCSBinder";
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Text {
+                text: AppState.status-text;
+                font-size: 11px;
+                color: Palette.foreground.with-alpha(0.7);
+            }
+        }
+        // Stretch.
+        Rectangle { horizontal-stretch: 1; }
+        if AppState.dcs-running: Rectangle {
+            background: #6e1010;
+            border-radius: 4px;
+            HorizontalBox {
+                padding-left: 10px;
+                padding-right: 10px;
+                Text {
+                    text: "DCS.exe is running (PID " + AppState.dcs-running-pid + ") — remap disabled";
+                    color: white;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Button {
+            text: AppState.scanning ? "Scanning..." : "Rescan";
+            enabled: !AppState.scanning && !AppState.applying;
+            clicked => { AppState.rescan(); }
+        }
+        Button {
+            text: "Undo last";
+            enabled: !AppState.applying;
+            clicked => { AppState.undo-last(); }
+        }
+    }
+}
+
+component InstallsPanel inherits Rectangle {
+    height: 32px + installs-vbox.preferred-height;
+    background: Palette.background;
+    border-color: Palette.border;
+    border-width: 1px;
+    installs-vbox := VerticalBox {
+        padding: 8px;
+        spacing: 4px;
+        for inst[i] in AppState.installs: HorizontalBox {
+            padding: 0;
+            spacing: 8px;
+            Text {
+                text: inst.label;
+                font-weight: 700;
+                width: 130px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: inst.input-root;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: inst.aircraft-count + " aircraft · " + inst.device-count + " files";
+                color: Palette.foreground.with-alpha(0.7);
+                vertical-alignment: center;
+            }
+        }
+        if AppState.installs.length == 0: Text {
+            text: "No DCS installs discovered. Did you launch DCS at least once?";
+            color: Palette.foreground.with-alpha(0.7);
+        }
+    }
+}
+
+component ConflictsList inherits Rectangle {
+    width: 460px;
+    background: Palette.background;
+    border-color: Palette.border;
+    border-width: 1px;
+    VerticalBox {
+        padding: 0;
+        spacing: 0;
+        Rectangle {
+            height: 32px;
+            background: Palette.alternate-background;
+            HorizontalBox {
+                padding-left: 10px;
+                Text {
+                    text: AppState.conflicts.length + " actionable item(s)";
+                    vertical-alignment: center;
+                    font-weight: 600;
+                }
+            }
+        }
+        ScrollView {
+            VerticalBox {
+                padding: 6px;
+                spacing: 6px;
+                for c[i] in AppState.conflicts: Rectangle {
+                    background: AppState.selected-index == i
+                        ? Palette.accent-background
+                        : Palette.alternate-background;
+                    border-radius: 4px;
+                    border-color: c.is-orphan ? #b07e1a : Palette.border;
+                    border-width: 1px;
+                    TouchArea {
+                        clicked => { AppState.select-conflict(i); }
+                        VerticalBox {
+                            padding: 8px;
+                            spacing: 2px;
+                            HorizontalBox {
+                                padding: 0;
+                                spacing: 6px;
+                                Text {
+                                    text: c.is-orphan ? "[ORPHAN] " : "[CONFLICT] ";
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    color: c.is-orphan ? #b07e1a : Palette.accent-foreground;
+                                }
+                                Text {
+                                    text: c.aircraft + " / " + c.subtype;
+                                    font-size: 11px;
+                                    color: Palette.foreground.with-alpha(0.7);
+                                }
+                            }
+                            Text {
+                                text: c.device-name;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: (c.candidate-a-live ? "[LIVE]  " : "[STALE] ") + c.candidate-a-guid;
+                                font-size: 10px;
+                                color: c.candidate-a-live ? #2a8c3a : Palette.foreground.with-alpha(0.7);
+                                font-family: "Consolas";
+                            }
+                            if !c.is-orphan: Text {
+                                text: (c.candidate-b-live ? "[LIVE]  " : "[STALE] ") + c.candidate-b-guid;
+                                font-size: 10px;
+                                color: c.candidate-b-live ? #2a8c3a : Palette.foreground.with-alpha(0.7);
+                                font-family: "Consolas";
+                            }
+                            if c.is-orphan: Text {
+                                text: "[LIVE]  " + c.orphan-target-guid + "  (no file yet)";
+                                font-size: 10px;
+                                color: #2a8c3a;
+                                font-family: "Consolas";
+                            }
+                            if c.extra-candidates > 0: Text {
+                                text: "+ " + c.extra-candidates + " other stale GUID(s)";
+                                font-size: 10px;
+                                color: Palette.foreground.with-alpha(0.6);
+                            }
+                        }
+                    }
+                }
+                if AppState.conflicts.length == 0: Text {
+                    text: AppState.scanning
+                        ? "Scanning..."
+                        : "No conflicts or orphans detected.";
+                    color: Palette.foreground.with-alpha(0.7);
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+component DiffPane inherits Rectangle {
+    background: Palette.background;
+    border-color: Palette.border;
+    border-width: 1px;
+    VerticalBox {
+        padding: 0;
+        spacing: 0;
+        Rectangle {
+            height: 32px;
+            background: Palette.alternate-background;
+            HorizontalBox {
+                padding-left: 10px;
+                Text {
+                    text: "Side-by-side diff";
+                    vertical-alignment: center;
+                    font-weight: 600;
+                }
+            }
+        }
+        ScrollView {
+            VerticalBox {
+                padding: 8px;
+                spacing: 0;
+                if AppState.diff-segments.length == 0: Text {
+                    text: "Select an item on the left to see its content / diff.";
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+                for seg[i] in AppState.diff-segments: Rectangle {
+                    background:
+                        seg.kind == 1 ? #1f3a1f
+                      : seg.kind == 2 ? #3a1f1f
+                      :                 transparent;
+                    HorizontalBox {
+                        padding: 0;
+                        padding-left: 4px;
+                        Text {
+                            text: seg.kind == 1 ? "+" : seg.kind == 2 ? "-" : " ";
+                            font-family: "Consolas";
+                            color: seg.kind == 1 ? #6cd07c
+                                : seg.kind == 2 ? #ec7c7c
+                                : Palette.foreground.with-alpha(0.5);
+                            width: 12px;
+                        }
+                        Text {
+                            text: seg.text;
+                            font-family: "Consolas";
+                            font-size: 11px;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component PlanDialog inherits Rectangle {
+    background: #000a;
+    HorizontalBox {
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+        Rectangle {
+            background: Palette.background;
+            border-color: Palette.border;
+            border-width: 1px;
+            border-radius: 6px;
+            width: 720px;
+            max-height: 600px;
+            VerticalBox {
+                padding: 16px;
+                spacing: 10px;
+                Text {
+                    text: "Confirm remap";
+                    font-size: 16px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: AppState.plan-summary.device-name + "  (" + AppState.plan-summary.aircraft-count + " aircraft, " + AppState.plan-summary.mutation-count + " mutations)";
+                    font-size: 12px;
+                    color: Palette.foreground.with-alpha(0.8);
+                }
+                Text {
+                    text: "From: " + AppState.plan-summary.from-guid;
+                    font-family: "Consolas";
+                    font-size: 11px;
+                }
+                Text {
+                    text: " To:  " + AppState.plan-summary.to-guid;
+                    font-family: "Consolas";
+                    font-size: 11px;
+                }
+                Text {
+                    text: "Backups will be written to:";
+                    font-size: 11px;
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+                Text {
+                    text: AppState.plan-summary.backup-dir;
+                    font-family: "Consolas";
+                    font-size: 10px;
+                    color: Palette.foreground.with-alpha(0.8);
+                    wrap: word-wrap;
+                }
+                ScrollView {
+                    height: 240px;
+                    VerticalBox {
+                        spacing: 1px;
+                        for line[i] in AppState.plan-summary.lines: Text {
+                            text: line;
+                            font-family: "Consolas";
+                            font-size: 10px;
+                        }
+                    }
+                }
+                HorizontalBox {
+                    Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        text: "Cancel";
+                        clicked => { AppState.cancel-apply(); }
+                    }
+                    Button {
+                        text: AppState.applying ? "Applying..." : "Confirm — apply remap";
+                        primary: true;
+                        enabled: !AppState.applying && !AppState.dcs-running;
+                        clicked => { AppState.confirm-apply(); }
+                    }
+                }
+                if AppState.last-result != "": Text {
+                    text: AppState.last-result;
+                    color: Palette.foreground.with-alpha(0.85);
+                    wrap: word-wrap;
+                }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+component DetailHeader inherits Rectangle {
+    height: 56px;
+    background: Palette.alternate-background;
+    HorizontalBox {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        VerticalBox {
+            padding: 0;
+            spacing: 2px;
+            Text {
+                text: AppState.selected-index >= 0
+                    ? AppState.conflicts[AppState.selected-index].device-name
+                    : "";
+                font-weight: 700;
+                font-size: 14px;
+            }
+            Text {
+                text: AppState.selected-index >= 0
+                    ? AppState.conflicts[AppState.selected-index].aircraft + " / " + AppState.conflicts[AppState.selected-index].subtype
+                    : "";
+                font-size: 11px;
+                color: Palette.foreground.with-alpha(0.7);
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        // Two-candidate case: pick which content stays, target is the live one (if any).
+        if AppState.selected-index >= 0 && !AppState.conflicts[AppState.selected-index].is-orphan: Button {
+            text: "Use A (" + (AppState.conflicts[AppState.selected-index].candidate-a-live ? "live" : "stale") + ")";
+            enabled: !AppState.dcs-running && !AppState.applying;
+            clicked => {
+                // Source = A; target = live one (B if B is live, else A's GUID -> falls back to A no-op which Rust rejects).
+                AppState.request-plan(
+                    AppState.conflicts[AppState.selected-index].candidate-a-guid,
+                    AppState.conflicts[AppState.selected-index].candidate-b-live
+                        ? AppState.conflicts[AppState.selected-index].candidate-b-guid
+                        : AppState.conflicts[AppState.selected-index].candidate-a-guid
+                );
+            }
+        }
+        if AppState.selected-index >= 0 && !AppState.conflicts[AppState.selected-index].is-orphan: Button {
+            text: "Use B (" + (AppState.conflicts[AppState.selected-index].candidate-b-live ? "live" : "stale") + ")";
+            enabled: !AppState.dcs-running && !AppState.applying;
+            clicked => {
+                AppState.request-plan(
+                    AppState.conflicts[AppState.selected-index].candidate-b-guid,
+                    AppState.conflicts[AppState.selected-index].candidate-a-live
+                        ? AppState.conflicts[AppState.selected-index].candidate-a-guid
+                        : AppState.conflicts[AppState.selected-index].candidate-b-guid
+                );
+            }
+        }
+        // Orphan: only one source, target is the live GUID.
+        if AppState.selected-index >= 0 && AppState.conflicts[AppState.selected-index].is-orphan: Button {
+            text: "Remap to live";
+            primary: true;
+            enabled: !AppState.dcs-running && !AppState.applying;
+            clicked => {
+                AppState.request-plan(
+                    AppState.conflicts[AppState.selected-index].candidate-a-guid,
+                    AppState.conflicts[AppState.selected-index].orphan-target-guid
+                );
+            }
+        }
+    }
+}
 
 export component App inherits Window {
     title: "DCSBinder";
-    width: 800px;
-    height: 600px;
-    Text {
-        text: "DCSBinder — UI lands in M4";
-        font-size: 16px;
+    width: 1280px;
+    height: 800px;
+    background: Palette.background;
+    icon: @image-url("");
+
+    VerticalBox {
+        padding: 0;
+        spacing: 0;
+        StatusBar {}
+        InstallsPanel {}
+        HorizontalBox {
+            padding: 0;
+            spacing: 0;
+            ConflictsList {}
+            VerticalBox {
+                padding: 0;
+                spacing: 0;
+                DetailHeader {}
+                DiffPane {
+                    vertical-stretch: 1;
+                }
+            }
+        }
+    }
+
+    if AppState.plan-visible: PlanDialog {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
     }
 }
