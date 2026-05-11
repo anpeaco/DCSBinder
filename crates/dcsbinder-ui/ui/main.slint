@@ -192,12 +192,12 @@ component ConflictsList inherits Rectangle {
                 padding: 6px;
                 spacing: 6px;
                 for c[i] in AppState.conflicts: Rectangle {
-                    background: AppState.selected-index == i
-                        ? Palette.accent-background
-                        : Palette.alternate-background;
+                    background: AppState.selected-index == i ? #2a4060 : Palette.alternate-background;
                     border-radius: 4px;
-                    border-color: c.is-orphan ? #b07e1a : Palette.border;
-                    border-width: 1px;
+                    border-color: AppState.selected-index == i
+                        ? #6cb0ff
+                        : (c.is-orphan ? #b07e1a : Palette.border);
+                    border-width: AppState.selected-index == i ? 2px : 1px;
                     TouchArea {
                         clicked => { AppState.select-conflict(i); }
                         VerticalBox {
@@ -293,33 +293,29 @@ component DiffPane inherits Rectangle {
         }
         if AppState.diff-mode == 0: ScrollView {
             VerticalBox {
-                padding: 8px;
+                padding: 0;
                 spacing: 0;
                 if AppState.diff-segments.length == 0: Text {
                     text: "Select an item on the left to see its content / diff.";
                     color: Palette.foreground.with-alpha(0.7);
                 }
                 for seg[i] in AppState.diff-segments: Rectangle {
-                    background:
-                        seg.kind == 1 ? #1f3a1f
-                      : seg.kind == 2 ? #3a1f1f
-                      :                 transparent;
-                    HorizontalBox {
-                        padding: 0;
-                        padding-left: 4px;
-                        Text {
-                            text: seg.kind == 1 ? "+" : seg.kind == 2 ? "-" : " ";
-                            font-family: "Consolas";
-                            color: seg.kind == 1 ? #6cd07c
-                                : seg.kind == 2 ? #ec7c7c
-                                : Palette.foreground.with-alpha(0.5);
-                            width: 12px;
-                        }
-                        Text {
-                            text: seg.text;
-                            font-family: "Consolas";
-                            font-size: 11px;
-                        }
+                    height: 18px;
+                    clip: true;
+                    background: seg.kind == 1 ? #1f3a1f
+                              : seg.kind == 2 ? #3a1f1f
+                              :                 transparent;
+                    Text {
+                        x: 6px;
+                        text: (seg.kind == 1 ? "+ " : seg.kind == 2 ? "- " : "  ") + seg.text;
+                        font-family: "Consolas";
+                        font-size: 11px;
+                        color: seg.kind == 1 ? #9cd09c
+                            : seg.kind == 2 ? #ec9c9c
+                            : Palette.foreground;
+                        overflow: clip;
+                        wrap: no-wrap;
+                        vertical-alignment: center;
                     }
                 }
             }
@@ -332,49 +328,45 @@ component DiffPane inherits Rectangle {
                     text: "Select an item on the left to see its content / diff.";
                     color: Palette.foreground.with-alpha(0.7);
                 }
-                for row[i] in AppState.sbs-rows: HorizontalBox {
+                for row[i] in AppState.sbs-rows: HorizontalLayout {
+                    height: 18px;
                     padding: 0;
                     spacing: 0;
+                    // Left column.
                     Rectangle {
                         horizontal-stretch: 1;
-                        background:
-                            row.left-kind == 2 ? #1a1a1a
-                          : row.left-kind == 1 ? #3a1f1f
-                          :                      transparent;
-                        HorizontalBox {
-                            padding: 0;
-                            padding-left: 4px;
-                            Text {
-                                text: row.left-text;
-                                font-family: "Consolas";
-                                font-size: 11px;
-                                color: row.left-kind == 1
-                                    ? #ec7c7c
-                                    : Palette.foreground;
-                            }
+                        clip: true;
+                        background: row.left-kind == 2 ? #1a1a1a
+                                  : row.left-kind == 1 ? #3a1f1f
+                                  :                      transparent;
+                        Text {
+                            x: 6px;
+                            text: row.left-text;
+                            font-family: "Consolas";
+                            font-size: 11px;
+                            color: row.left-kind == 1 ? #ec9c9c : Palette.foreground;
+                            overflow: clip;
+                            wrap: no-wrap;
+                            vertical-alignment: center;
                         }
                     }
-                    Rectangle {
-                        width: 1px;
-                        background: Palette.border;
-                    }
+                    Rectangle { width: 1px; background: Palette.border; }
+                    // Right column.
                     Rectangle {
                         horizontal-stretch: 1;
-                        background:
-                            row.right-kind == 2 ? #1a1a1a
-                          : row.right-kind == 1 ? #1f3a1f
-                          :                       transparent;
-                        HorizontalBox {
-                            padding: 0;
-                            padding-left: 4px;
-                            Text {
-                                text: row.right-text;
-                                font-family: "Consolas";
-                                font-size: 11px;
-                                color: row.right-kind == 1
-                                    ? #6cd07c
-                                    : Palette.foreground;
-                            }
+                        clip: true;
+                        background: row.right-kind == 2 ? #1a1a1a
+                                  : row.right-kind == 1 ? #1f3a1f
+                                  :                       transparent;
+                        Text {
+                            x: 6px;
+                            text: row.right-text;
+                            font-family: "Consolas";
+                            font-size: 11px;
+                            color: row.right-kind == 1 ? #9cd09c : Palette.foreground;
+                            overflow: clip;
+                            wrap: no-wrap;
+                            vertical-alignment: center;
                         }
                     }
                 }
@@ -537,8 +529,10 @@ component DetailHeader inherits Rectangle {
 
 export component App inherits Window {
     title: "DCSBinder";
-    width: 1280px;
-    height: 800px;
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 800px;
+    min-height: 500px;
     background: Palette.background;
     icon: @image-url("");
 

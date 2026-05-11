@@ -88,18 +88,53 @@ fn chrono_like_timestamp() -> String {
 }
 
 fn main() -> Result<()> {
+    startup_trace("main entered");
     install_panic_hook();
-    let app = App::new()?;
+    startup_trace("panic hook installed");
+    let app = match App::new() {
+        Ok(a) => {
+            startup_trace("App::new ok");
+            a
+        }
+        Err(e) => {
+            startup_trace(&format!("App::new FAILED: {e:?}"));
+            return Err(e.into());
+        }
+    };
     let state = Arc::new(Mutex::new(AppData::default()));
     let pending = Arc::new(Mutex::new(None::<PendingApply>));
 
     wire_callbacks(&app, state.clone(), pending.clone());
+    startup_trace("callbacks wired");
 
-    // Kick off the first scan in the background.
     trigger_rescan(&app, state.clone());
+    startup_trace("first rescan triggered");
 
-    app.run()?;
+    startup_trace("about to call app.run()");
+    let run_result = app.run();
+    startup_trace(&format!("app.run() returned: {run_result:?}"));
+    run_result?;
     Ok(())
+}
+
+fn startup_trace(line: &str) {
+    // Write to TWO locations so at least one is reachable regardless of
+    // %TEMP% / OneDrive policy quirks: the user's TEMP and a fixed
+    // %USERPROFILE%\dcsbinder-startup.log next to the user's home dir.
+    let temp_log = std::env::temp_dir().join("dcsbinder-ui-startup.txt");
+    let home_log = std::env::var_os("USERPROFILE")
+        .map(|p| std::path::PathBuf::from(p).join("dcsbinder-startup.log"));
+
+    for target in [Some(temp_log), home_log].into_iter().flatten() {
+        let _ = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&target)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "[unix={}] {}", chrono_like_timestamp(), line)
+            });
+    }
 }
 
 fn wire_callbacks(
